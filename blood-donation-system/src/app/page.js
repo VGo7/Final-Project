@@ -1,15 +1,21 @@
 "use client";
 import React, { useState } from 'react';
+import Link from 'next/link';
 import { Heart, Droplet, Users, MapPin, Calendar, Phone, Mail, Clock, Award, Shield } from 'lucide-react';
 
 export default function BloodDonationHome() {
   const [activeTab, setActiveTab] = useState('donate');
 
+  // All common blood types (8 total). "urgent" flagged when units are low.
   const bloodTypes = [
-    { type: 'A+', urgent: true, units: 12 },
-    { type: 'O-', urgent: true, units: 8 },
+    { type: 'A+', urgent: false, units: 12 },
+    { type: 'A-', urgent: true, units: 7 },
     { type: 'B+', urgent: false, units: 24 },
+    { type: 'B-', urgent: true, units: 6 },
+    { type: 'AB+', urgent: false, units: 9 },
     { type: 'AB-', urgent: true, units: 5 },
+    { type: 'O+', urgent: false, units: 20 },
+    { type: 'O-', urgent: true, units: 8 },
   ];
 
   const stats = [
@@ -27,22 +33,21 @@ export default function BloodDonationHome() {
           <div className="flex justify-between items-center h-16">
             <div className="flex items-center space-x-2">
               <Heart className="w-8 h-8 text-red-600 fill-current" />
-              <span className="text-2xl font-bold text-gray-800">LifeBlood</span>
+              <span className="text-2xl font-bold text-gray-800">The Donor</span>
             </div>
             <div className="hidden md:flex space-x-8">
               <a href="#home" className="text-gray-700 hover:text-red-600 transition">Home</a>
               <a href="#donate" className="text-gray-700 hover:text-red-600 transition">Donate</a>
-              <a href="#request" className="text-gray-700 hover:text-red-600 transition">Request Blood</a>
               <a href="#about" className="text-gray-700 hover:text-red-600 transition">About</a>
               <a href="#contact" className="text-gray-700 hover:text-red-600 transition">Contact</a>
             </div>
             <div className="flex space-x-3">
-              <button className="px-4 py-2 text-red-600 border border-red-600 rounded-lg hover:bg-red-50 transition">
+              <Link href="/signin" className="px-4 py-2 text-red-600 border border-red-600 rounded-lg hover:bg-red-50 transition">
                 Sign In
-              </button>
-              <button className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition">
+              </Link>
+              <Link href="/register" className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition">
                 Register
-              </button>
+              </Link>
             </div>
           </div>
         </div>
@@ -53,6 +58,23 @@ export default function BloodDonationHome() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
           <div className="grid md:grid-cols-2 gap-12 items-center">
             <div className="space-y-6">
+              {/* Simple tabs to switch context (Donate / Request) */}
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={() => setActiveTab('donate')}
+                  className={`px-4 py-2 rounded-full text-sm font-medium transition ${activeTab === 'donate' ? 'bg-red-600 text-white' : 'bg-white text-red-600 border border-red-100'}`}
+                  aria-pressed={activeTab === 'donate'}
+                >
+                  Donate
+                </button>
+                <button
+                  onClick={() => setActiveTab('request')}
+                  className={`px-4 py-2 rounded-full text-sm font-medium transition ${activeTab === 'request' ? 'bg-red-600 text-white' : 'bg-white text-red-600 border border-red-100'}`}
+                  aria-pressed={activeTab === 'request'}
+                >
+                  Request Blood
+                </button>
+              </div>
               <h1 className="text-5xl md:text-6xl font-bold text-gray-900 leading-tight">
                 Every Drop Counts,
                 <span className="text-red-600"> Every Life Matters</span>
@@ -70,15 +92,21 @@ export default function BloodDonationHome() {
               </div>
             </div>
             <div className="relative">
-              <div className="bg-linear-to-br from-red-100 to-pink-100 rounded-3xl p-8 shadow-2xl">
-                <div className="grid grid-cols-2 gap-4">
+              <div className="bg-linear-to-br from-red-100 to-pink-100 rounded-3xl p-6 shadow-2xl">
+                {/* Responsive grid: 2 cols on xs, 4 on md to show all 8 cleanly */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
                   {bloodTypes.map((blood, idx) => (
-                    <div key={idx} className="bg-white rounded-xl p-6 text-center shadow-md hover:shadow-lg transition transform hover:-translate-y-1">
-                      <Droplet className={`w-12 h-12 mx-auto mb-2 ${blood.urgent ? 'text-red-600' : 'text-gray-400'}`} />
-                      <div className="text-3xl font-bold text-gray-800">{blood.type}</div>
+                    <div
+                      key={idx}
+                      className={`relative bg-white rounded-xl p-5 text-center shadow-md hover:shadow-lg transition transform hover:-translate-y-1 ${blood.urgent ? 'ring-2 ring-red-200' : ''}`}
+                    >
+                      <div className="flex items-center justify-center mx-auto mb-3 w-12 h-12 rounded-full bg-red-50">
+                        <Droplet className={`w-6 h-6 ${blood.urgent ? 'text-red-600' : 'text-red-400'}`} />
+                      </div>
+                      <div className="text-2xl font-bold text-gray-800">{blood.type}</div>
                       <div className="text-sm text-gray-600 mt-1">{blood.units} units</div>
                       {blood.urgent && (
-                        <span className="inline-block mt-2 px-3 py-1 bg-red-100 text-red-600 text-xs font-semibold rounded-full">
+                        <span className="absolute top-3 right-3 inline-flex items-center px-2.5 py-1 rounded-full bg-red-600 text-white text-xs font-semibold">
                           URGENT
                         </span>
                       )}
@@ -92,15 +120,17 @@ export default function BloodDonationHome() {
       </section>
 
       {/* Stats Section */}
-      <section className="bg-red-600 text-white py-16">
+      <section className="bg-red-600 text-white py-12">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
             {stats.map((stat, idx) => {
               const Icon = stat.icon;
               return (
                 <div key={idx} className="text-center">
-                  <Icon className="w-12 h-12 mx-auto mb-3" />
-                  <div className="text-4xl font-bold mb-2">{stat.value}</div>
+                  <div className="mx-auto mb-3 w-16 h-16 rounded-full bg-white/20 flex items-center justify-center">
+                    <Icon className="w-8 h-8 text-white" />
+                  </div>
+                  <div className="text-3xl font-bold mb-1">{stat.value}</div>
                   <div className="text-red-100">{stat.label}</div>
                 </div>
               );
@@ -142,53 +172,8 @@ export default function BloodDonationHome() {
         </div>
       </section>
 
-      {/* Urgent Requests */}
-      <section className="py-20 bg-gray-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center mb-12">
-            <h2 className="text-4xl font-bold text-gray-900">Urgent Blood Requests</h2>
-            <button className="px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition">
-              View All Requests
-            </button>
-          </div>
-          <div className="grid md:grid-cols-2 gap-6">
-            {[1, 2, 3, 4].map((item) => (
-              <div key={item} className="bg-white rounded-xl p-6 shadow-md hover:shadow-lg transition">
-                <div className="flex justify-between items-start mb-4">
-                  <div className="flex items-center space-x-3">
-                    <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center">
-                      <Droplet className="w-6 h-6 text-red-600" />
-                    </div>
-                    <div>
-                      <div className="text-2xl font-bold text-gray-900">O- Blood</div>
-                      <div className="text-sm text-gray-600">3 units needed</div>
-                    </div>
-                  </div>
-                  <span className="px-3 py-1 bg-red-100 text-red-600 text-sm font-semibold rounded-full">
-                    URGENT
-                  </span>
-                </div>
-                <div className="space-y-2 text-gray-600">
-                  <div className="flex items-center space-x-2">
-                    <MapPin className="w-4 h-4" />
-                    <span>City General Hospital</span>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <Clock className="w-4 h-4" />
-                    <span>Needed within 24 hours</span>
-                  </div>
-                </div>
-                <button className="w-full mt-4 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition">
-                  Respond to Request
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
       {/* Contact Section */}
-      <section className="py-20">
+      <section className="py-5">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="bg-linear-to-br from-red-600 to-pink-600 rounded-3xl p-12 text-white">
             <div className="grid md:grid-cols-2 gap-12 items-center">
@@ -214,26 +199,37 @@ export default function BloodDonationHome() {
               </div>
               <div className="bg-white rounded-2xl p-8 text-gray-900">
                 <h3 className="text-2xl font-bold mb-6">Quick Contact</h3>
-                <div className="space-y-4">
+                <form className="space-y-4">
+                  <label className="sr-only" htmlFor="contact-name">Your Name</label>
                   <input
+                    id="contact-name"
+                    name="name"
                     type="text"
                     placeholder="Your Name"
                     className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-600 focus:border-transparent outline-none"
                   />
+
+                  <label className="sr-only" htmlFor="contact-email">Your Email</label>
                   <input
+                    id="contact-email"
+                    name="email"
                     type="email"
                     placeholder="Your Email"
                     className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-600 focus:border-transparent outline-none"
                   />
+
+                  <label className="sr-only" htmlFor="contact-message">Your Message</label>
                   <textarea
+                    id="contact-message"
+                    name="message"
                     placeholder="Your Message"
                     rows="4"
                     className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-600 focus:border-transparent outline-none"
                   ></textarea>
-                  <button className="w-full px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition font-semibold">
+                  <button type="submit" className="w-full px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition font-semibold">
                     Send Message
                   </button>
-                </div>
+                </form>
               </div>
             </div>
           </div>
@@ -241,7 +237,7 @@ export default function BloodDonationHome() {
       </section>
 
       {/* Footer */}
-      <footer className="bg-gray-900 text-white py-12">
+      <footer className="bg-gray-900 text-white py-7">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="grid md:grid-cols-4 gap-8 mb-8">
             <div>
@@ -278,7 +274,7 @@ export default function BloodDonationHome() {
               </ul>
             </div>
           </div>
-          <div className="border-t border-gray-800 pt-8 text-center text-gray-400">
+          <div className="border-t border-gray-800 pt-3 text-center text-gray-400">
             <p>&copy; 2024 LifeBlood Community Blood Donation System. All rights reserved.</p>
           </div>
         </div>

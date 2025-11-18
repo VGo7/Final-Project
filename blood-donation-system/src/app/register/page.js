@@ -1,9 +1,10 @@
-
 "use client";
 import React, { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Heart, Users, MapPin, Mail, Lock } from 'lucide-react';
 
 export default function RegisterPage() {
+	const router = useRouter();
 	const [role, setRole] = useState('donor');
 	const [loading, setLoading] = useState(false);
 	const [success, setSuccess] = useState('');
@@ -43,6 +44,8 @@ export default function RegisterPage() {
 				console.log('Register', { role, ...form });
 				// clear sensitive fields
 				setForm((s) => ({ ...s, password: '' }));
+				// after registration, navigate to donor landing
+				router.push('/donor-landing');
 			}, 900);
 		}
 

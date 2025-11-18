@@ -1,5 +1,6 @@
 "use client";
 import React, { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Heart, Mail, Lock } from 'lucide-react';
 
 export default function SignInPage() {
@@ -7,17 +8,28 @@ export default function SignInPage() {
 	const [password, setPassword] = useState('');
 	const [remember, setRemember] = useState(false);
 	const [error, setError] = useState('');
+	const router = useRouter();
+	const [loading, setLoading] = useState(false);
 
-	function handleSubmit(e) {
+	async function handleSubmit(e) {
 		e.preventDefault();
 		setError('');
 		if (!email) return setError('Please enter your email.');
 		if (!password) return setError('Please enter your password.');
-		// TODO: hook up real auth - currently just logs
-		console.log({ email, password, remember });
-		setError('');
-		// simulate success
-		alert('Signed in (demo)');
+		// Simulated auth when Firebase is not configured
+		setLoading(true);
+		try {
+			// Simulate network/auth delay
+			await new Promise((res) => setTimeout(res, 700));
+			try {
+				localStorage.setItem('auth', JSON.stringify({ email }));
+			} catch (e) {}
+			router.push('/donor-landing');
+		} catch (err) {
+			setError('Sign-in failed. Please try again.');
+		} finally {
+			setLoading(false);
+		}
 	}
 
 	return (
@@ -78,7 +90,9 @@ export default function SignInPage() {
 					</div>
 
 					<div>
-						<button type="submit" className="w-full px-4 py-3 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 transition">Sign In</button>
+						<button type="submit" className="w-full px-4 py-3 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 transition" disabled={loading}>
+							{loading ? 'Signing in...' : 'Sign In'}
+						</button>
 					</div>
 
 					<div className="flex items-center gap-3">

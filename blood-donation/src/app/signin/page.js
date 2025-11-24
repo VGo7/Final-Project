@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Heart, Mail, Lock } from 'lucide-react';
+import { signIn, getCurrentUser, ADMIN_EMAIL } from '@/utils/auth';
 
 export default function SignInPage() {
 	const [email, setEmail] = useState('');
@@ -16,17 +17,15 @@ export default function SignInPage() {
 		setError('');
 		if (!email) return setError('Please enter your email.');
 		if (!password) return setError('Please enter your password.');
-		// Simulated auth when Firebase is not configured
 		setLoading(true);
 		try {
-			// Simulate network/auth delay
-			await new Promise((res) => setTimeout(res, 700));
-			try {
-				localStorage.setItem('auth', JSON.stringify({ email }));
-			} catch (e) {}
-			router.push('/donor-landing');
+			const user = await signIn(email.trim(), password);
+			const role = user?.role || 'donor';
+			if (role === 'admin') router.push('/admin-landing');
+			else if (role === 'hospital') router.push('/hospital-landing');
+			else router.push('/donor-landing');
 		} catch (err) {
-			setError('Sign-in failed. Please try again.');
+			setError(err?.message || 'Sign-in failed.');
 		} finally {
 			setLoading(false);
 		}

@@ -15,6 +15,7 @@ import {
   Globe,
   ShieldCheck,
 } from "lucide-react";
+import { signOut } from '@/utils/auth';
 
 export default function DonorLanding() {
   const router = useRouter();
@@ -49,10 +50,8 @@ export default function DonorLanding() {
   }, [tracking]);
 
   function handleLogout() {
-    try {
-      localStorage.removeItem("auth");
-    } catch (e) {}
-    router.push("/signin");
+    try { signOut(); } catch (e) {}
+    router.push('/signin');
   }
 
   function enableGeolocation() {

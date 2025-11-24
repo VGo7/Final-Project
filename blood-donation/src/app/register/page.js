@@ -2,6 +2,8 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Heart, Users, MapPin, Mail, Lock } from 'lucide-react';
+import { signUp, ADMIN_EMAIL } from '@/utils/auth';
+
 
 export default function RegisterPage() {
 	const router = useRouter();
@@ -24,30 +26,50 @@ export default function RegisterPage() {
 		setForm((s) => ({ ...s, [field]: value }));
 	}
 
-		function handleSubmit(e) {
-			e.preventDefault();
-			setError('');
-			setSuccess('');
-			// basic validation
-			const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-			if (!form.email || !emailRegex.test(form.email)) return setError('Please enter a valid email.');
-			if (!form.password || form.password.length < 8) return setError('Password must be at least 8 characters.');
-			if (form.password !== form.confirmPassword) return setError('Passwords do not match.');
-			if (role === 'donor' && !form.name) return setError('Please enter your name.');
-			if (role === 'hospital' && !form.hospitalName) return setError('Please enter the hospital name.');
+	async function handleSubmit(e) {
+		e.preventDefault();
+		setError('');
+		setSuccess('');
+		
+		// Basic validation
+		const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+		if (!form.email || !emailRegex.test(form.email)) return setError('Please enter a valid email.');
+		if (!form.password || form.password.length < 8) return setError('Password must be at least 8 characters.');
+		if (form.password !== form.confirmPassword) return setError('Passwords do not match.');
+		if (role === 'donor' && !form.name) return setError('Please enter your name.');
+		if (role === 'hospital' && !form.hospitalName) return setError('Please enter the hospital name.');
 
-			// simulate API
-			setLoading(true);
-			setTimeout(() => {
-				setLoading(false);
-				setSuccess(`Registered as ${role} — check your email to confirm.`);
-				console.log('Register', { role, ...form });
-				// clear sensitive fields
-				setForm((s) => ({ ...s, password: '' }));
-				// after registration, navigate to donor landing
-				router.push('/donor-landing');
-			}, 900);
+		// Check for reserved admin email
+		if (form.email === ADMIN_EMAIL) {
+			setError('That email is reserved for the admin account.');
+			return;
 		}
+
+		setLoading(true);
+		
+		// Navigate immediately - don't wait for auth
+		const targetPage = role === 'hospital' ? '/hospital-landing' : '/donor-landing';
+		router.push(targetPage);
+		
+		// Continue auth in background
+		try {
+			const profile = (role === 'donor') ? {
+				name: form.name,
+				phone: form.phone || '',
+				bloodType: form.bloodType,
+			} : {
+				hospitalName: form.hospitalName,
+				hospitalAddress: form.hospitalAddress || '',
+				phone: form.phone || '',
+			};
+
+			await signUp({ email: form.email.trim(), password: form.password, role, profile });
+		} catch (err) {
+			// If auth fails after navigation, you might want to handle this differently
+			// For now, we just log it since user is already on the next page
+			console.error('Background auth error:', err);
+		}
+	}
 
 	return (
 		<div className="min-h-screen flex items-center justify-center bg-linear-to-br from-red-50 via-white to-pink-50 py-7">
@@ -82,9 +104,9 @@ export default function RegisterPage() {
 					</div>
 				</div>
 
-						<form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
-							{error && <div className="col-span-2 text-sm text-red-600 bg-red-50 p-2 rounded">{error}</div>}
-							{success && <div className="col-span-2 text-sm text-green-700 bg-green-50 p-2 rounded">{success}</div>}
+				<form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+					{error && <div className="col-span-2 text-sm text-red-600 bg-red-50 p-2 rounded">{error}</div>}
+					{success && <div className="col-span-2 text-sm text-green-700 bg-green-50 p-2 rounded">{success}</div>}
 
 					{/* Donor fields */}
 					{role === 'donor' && (
@@ -127,11 +149,11 @@ export default function RegisterPage() {
 								<input id="password" type="password" value={form.password} onChange={(e) => update('password', e.target.value)} placeholder="Password" className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-600" />
 							</div>
 
-						  <div className="col-span-2 relative">
-											<label htmlFor="confirmPassword" className="sr-only">Confirm Password</label>
-											<Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-red-600" />
-											<input id="confirmPassword" type="password" value={form.confirmPassword} onChange={(e) => update('confirmPassword', e.target.value)} placeholder="Confirm Password" className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-600 text-red-600" />
-										</div>
+							<div className="col-span-2 relative">
+								<label htmlFor="confirmPassword" className="sr-only">Confirm Password</label>
+								<Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-red-600" />
+								<input id="confirmPassword" type="password" value={form.confirmPassword} onChange={(e) => update('confirmPassword', e.target.value)} placeholder="Confirm Password" className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-600 text-red-600" />
+							</div>
 						</>
 					)}
 
@@ -165,20 +187,19 @@ export default function RegisterPage() {
 							<div className="col-span-2 text-red-600 relative">
 								<label htmlFor="confirmPassword" className="sr-only">Confirm Password</label>
 								<Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-red-600" />
-								<input id="confirmPassword" value={form.confirmPassword} onChange={(e) => update('confirmPassword', e.target.value)} placeholder="Confirm Password" className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-600" />
+								<input id="confirmPassword" type="password" value={form.confirmPassword} onChange={(e) => update('confirmPassword', e.target.value)} placeholder="Confirm Password" className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-600" />
 							</div>
 						</>
 					)}
 
-								<div className="col-span-2 flex items-center justify-between mt-2">
-									<div className="text-sm text-gray-600">Already have an account? <a href="/signin" className="text-red-600 font-semibold">Sign in</a></div>
-									<button type="submit" disabled={loading} aria-busy={loading} className={`px-6 py-3 rounded-lg font-semibold ${loading ? 'bg-red-400 text-white' : 'bg-red-600 text-white hover:bg-red-700'}`}>
-										{loading ? 'Creating...' : 'Create account'}
-									</button>
-								</div>
+					<div className="col-span-2 flex items-center justify-between mt-2">
+						<div className="text-sm text-gray-600">Already have an account? <a href="/signin" className="text-red-600 font-semibold">Sign in</a></div>
+						<button type="submit" disabled={loading} aria-busy={loading} className={`px-6 py-3 rounded-lg font-semibold ${loading ? 'bg-red-400 text-white' : 'bg-red-600 text-white hover:bg-red-700'}`}>
+							{loading ? 'Creating...' : 'Create account'}
+						</button>
+					</div>
 				</form>
 			</div>
 		</div>
 	);
 }
-

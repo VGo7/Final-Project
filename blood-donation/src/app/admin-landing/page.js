@@ -1,8 +1,8 @@
 "use client";
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Users, Home, Check, X, LogOut, Bell } from "lucide-react";
-import { signOut } from '@/utils/auth';
+import { signOut, initFirebase } from '@/utils/auth';
 
 export default function AdminLanding() {
   const router = useRouter();
@@ -23,6 +23,8 @@ export default function AdminLanding() {
     { id: 2, text: 'New donor application: Alex Donor' },
   ]);
 
+  const [hospitalSearch, setHospitalSearch] = useState('');
+
   const [actionLoading, setActionLoading] = useState(null);
 
   function handleLogout() {
@@ -32,19 +34,66 @@ export default function AdminLanding() {
 
   async function acceptHospital(id) {
     setActionLoading(id);
-    await new Promise((r) => setTimeout(r, 600));
-    setHospitals((s) => s.map(h => h.id === id ? { ...h, verified: 'accepted' } : h));
-    setNotifications((n) => [{ id: Date.now(), text: `Hospital ${id} accepted` }, ...n]);
-    setActionLoading(null);
+    try {
+      const fb = await initFirebase();
+      if (fb && fb.db) {
+        const { doc, updateDoc } = await import('firebase/firestore');
+        await updateDoc(doc(fb.db, 'hospitals', id), { verified: 'accepted' });
+        setNotifications((n) => [{ id: Date.now(), text: `Hospital ${id} accepted` }, ...n]);
+      } else {
+        // fallback to local update
+        await new Promise((r) => setTimeout(r, 600));
+        setHospitals((s) => s.map(h => h.id === id ? { ...h, verified: 'accepted' } : h));
+        setNotifications((n) => [{ id: Date.now(), text: `Hospital ${id} accepted` }, ...n]);
+      }
+    } catch (e) {
+      console.error('acceptHospital failed', e);
+    } finally {
+      setActionLoading(null);
+    }
   }
 
   async function denyHospital(id) {
     setActionLoading(id);
-    await new Promise((r) => setTimeout(r, 600));
-    setHospitals((s) => s.map(h => h.id === id ? { ...h, verified: 'denied' } : h));
-    setNotifications((n) => [{ id: Date.now(), text: `Hospital ${id} denied` }, ...n]);
-    setActionLoading(null);
+    try {
+      const fb = await initFirebase();
+      if (fb && fb.db) {
+        const { doc, updateDoc } = await import('firebase/firestore');
+        await updateDoc(doc(fb.db, 'hospitals', id), { verified: 'denied' });
+        setNotifications((n) => [{ id: Date.now(), text: `Hospital ${id} denied` }, ...n]);
+      } else {
+        await new Promise((r) => setTimeout(r, 600));
+        setHospitals((s) => s.map(h => h.id === id ? { ...h, verified: 'denied' } : h));
+        setNotifications((n) => [{ id: Date.now(), text: `Hospital ${id} denied` }, ...n]);
+      }
+    } catch (e) {
+      console.error('denyHospital failed', e);
+    } finally {
+      setActionLoading(null);
+    }
   }
+
+  // Subscribe to hospitals collection in Firestore (if available) and keep local state in sync
+  useEffect(() => {
+    let unsub = null;
+    (async () => {
+      try {
+        const fb = await initFirebase();
+        if (fb && fb.db) {
+          const { collection, onSnapshot } = await import('firebase/firestore');
+          const col = collection(fb.db, 'hospitals');
+          unsub = onSnapshot(col, (snap) => {
+            const arr = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+            setHospitals(arr);
+          }, (err) => console.error('hospitals onSnapshot error', err));
+        }
+      } catch (e) {
+        console.debug('Firestore not available for hospitals subscription', e);
+      }
+    })();
+
+    return () => { if (typeof unsub === 'function') unsub(); };
+  }, []);
 
   async function acceptDonor(id) {
     setActionLoading(id);
@@ -64,6 +113,12 @@ export default function AdminLanding() {
 
   const pendingHospitals = hospitals.filter(h => h.verified === 'pending');
   const pendingDonors = donors.filter(d => d.eligible === 'pending');
+  const existingHospitals = hospitals.filter(h => h.verified === 'accepted');
+  const filteredHospitals = existingHospitals.filter(h => {
+    if (!hospitalSearch) return true;
+    const q = hospitalSearch.toLowerCase();
+    return h.name.toLowerCase().includes(q) || (h.address || '').toLowerCase().includes(q);
+  });
 
   return (
     <div className="min-h-screen bg-linear-to-br from-red-50 via-white to-pink-50 p-6">
@@ -95,59 +150,67 @@ export default function AdminLanding() {
         </header>
 
         <main className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-          {/* Left: Pending Hospitals */}
+          {/* Left: Existing Hospitals (searchable) */}
           <section className="bg-white rounded-3xl p-4 shadow-sm lg:col-span-1">
-            <h4 className="font-semibold mb-3">Pending Hospitals</h4>
-            {pendingHospitals.length === 0 && <div className="text-sm text-gray-500">No hospitals pending review.</div>}
+            <h4 className="font-semibold mb-3 text-red-600">Existing Hospitals</h4>
+            <div className="mb-3">
+              <input
+                type="search"
+                value={hospitalSearch}
+                onChange={(e) => setHospitalSearch(e.target.value)}
+                placeholder="Search hospitals by name or address"
+                className="w-full px-3 py-2 border rounded-lg text-red-600 focus:ring-2 focus:ring-red-600"
+              />
+            </div>
             <div className="space-y-3">
-              {pendingHospitals.map((h) => (
-                <div key={h.id} className="p-3 bg-red-50 rounded-lg border border-red-50 flex flex-col gap-2">
-                  <div className="font-medium">{h.name}</div>
-                  <div className="text-xs text-gray-500">{h.address}</div>
-                  <div className="flex items-center gap-2 mt-2">
-                    <button onClick={() => acceptHospital(h.id)} disabled={actionLoading===h.id} className="flex-1 px-3 py-2 rounded bg-green-600 text-white flex items-center justify-center gap-2">
-                      <Check className="w-4 h-4" /> Accept
-                    </button>
-                    <button onClick={() => denyHospital(h.id)} disabled={actionLoading===h.id} className="flex-1 px-3 py-2 rounded bg-white border border-gray-200 text-gray-700 flex items-center justify-center gap-2">
-                      <X className="w-4 h-4" /> Deny
-                    </button>
+              {filteredHospitals.length > 0 ? (
+                filteredHospitals.map((h) => (
+                  <div key={h.id} className="p-3 bg-white rounded-lg border border-gray-100 flex flex-col gap-2">
+                    <div className="font-medium text-red-600">{h.name}</div>
+                    <div className="text-xs text-gray-700">{h.address}</div>
+                    <div className="flex items-center gap-2 mt-2">
+                      <span className="text-sm text-green-700">{h.verified}</span>
+                      <button onClick={() => setHospitals(s => s.filter(x => x.id !== h.id))} className="px-3 py-2 rounded bg-white text-red-600 border">Remove</button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))
+              ) : (
+                <div className="text-sm text-gray-500">No hospitals found.</div>
+              )}
             </div>
           </section>
 
-          {/* Center: Stats and pending donors */}
+          {/* Center: Stats and Pending Hospitals */}
           <section className="lg:col-span-2 bg-white rounded-3xl p-6 shadow-2xl">
             <div className="flex items-center justify-between">
               <div>
-                <h3 className="text-2xl font-bold">Overview</h3>
+                <h3 className="text-2xl font-bold text-red-600">Overview</h3>
                 <p className="text-sm text-gray-500">Quick insights and actions</p>
               </div>
             </div>
 
             <div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="p-4 rounded-xl bg-red-50 border"> <div className="text-xs text-gray-500">Hospitals pending</div> <div className="text-2xl font-bold">{pendingHospitals.length}</div> </div>
-              <div className="p-4 rounded-xl bg-red-50 border"> <div className="text-xs text-gray-500">Donors pending</div> <div className="text-2xl font-bold">{pendingDonors.length}</div> </div>
-              <div className="p-4 rounded-xl bg-red-50 border"> <div className="text-xs text-gray-500">Total notifications</div> <div className="text-2xl font-bold">{notifications.length}</div> </div>
+              <div className="p-4 rounded-xl bg-red-50 border"> <div className="text-xs text-gray-500">Existing Hospitals</div> <div className="text-2xl font-bold text-red-600">{existingHospitals.length}</div> </div>
+              <div className="p-4 rounded-xl bg-red-50 border"> <div className="text-xs text-gray-500">Hospitals pending</div> <div className="text-2xl font-bold text-red-600">{pendingHospitals.length}</div> </div>
+              <div className="p-4 rounded-xl bg-red-50 border"> <div className="text-xs text-gray-500">Total notifications</div> <div className="text-2xl font-bold text-red-600">{notifications.length}</div> </div>
             </div>
 
             <div className="mt-6">
-              <h4 className="text-lg font-semibold">Pending Donors</h4>
+              <h4 className="text-lg font-semibold text-red-600">Pending Hospitals</h4>
               <div className="mt-3 grid gap-3">
-                {pendingDonors.map((d) => (
-                  <div key={d.id} className="flex items-center justify-between p-3 bg-white border border-gray-100 rounded-lg shadow-sm">
+                {pendingHospitals.map((h) => (
+                  <div key={h.id} className="flex items-center justify-between p-3 bg-red-50 border border-red-50 rounded-lg shadow-sm">
                     <div>
-                      <div className="font-medium">{d.name}</div>
-                      <div className="text-sm text-gray-500">Blood: {d.bloodType}</div>
+                      <div className="font-medium text-red-600">{h.name}</div>
+                      <div className="text-xs text-gray-500">{h.address}</div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <button onClick={() => acceptDonor(d.id)} disabled={actionLoading===d.id} className="px-3 py-2 rounded bg-green-600 text-white flex items-center gap-2"><Check className="w-4 h-4" /> Accept</button>
-                      <button onClick={() => denyDonor(d.id)} disabled={actionLoading===d.id} className="px-3 py-2 rounded bg-white border border-gray-200 text-gray-700 flex items-center gap-2"><X className="w-4 h-4" /> Deny</button>
+                      <button onClick={() => acceptHospital(h.id)} disabled={actionLoading===h.id} className="px-3 py-2 rounded bg-green-600 text-white flex items-center gap-2"><Check className="w-4 h-4" /> Accept</button>
+                      <button onClick={() => denyHospital(h.id)} disabled={actionLoading===h.id} className="px-3 py-2 rounded bg-white border border-gray-200 text-gray-700 flex items-center gap-2"><X className="w-4 h-4" /> Deny</button>
                     </div>
                   </div>
                 ))}
-                {pendingDonors.length === 0 && <div className="text-sm text-gray-500">No donors pending review.</div>}
+                {pendingHospitals.length === 0 && <div className="text-sm text-gray-500">No hospitals pending review.</div>}
               </div>
             </div>
           </section>
@@ -166,10 +229,10 @@ export default function AdminLanding() {
 
             <div className="flex flex-col gap-2">
               <button onClick={() => { setHospitals((s)=>s); setDonors((d)=>d); }} className="w-full px-4 py-2 rounded-lg bg-red-600 text-white font-semibold">Refresh</button>
-              <button onClick={() => { setNotifications([]); }} className="w-full px-4 py-2 rounded-lg bg-white border border-gray-200">Clear notifications</button>
+              <button onClick={() => { setNotifications([]); }} className="w-full px-4 py-2 rounded-lg bg-white border border-gray-500 text-red-600">Clear notifications</button>
             </div>
 
-            <div className="mt-auto text-sm text-gray-500">
+            <div className="mt-auto text-sm text-red-600">
               <div className="font-medium text-gray-700 mb-1">Last action</div>
               <div className="p-3 bg-white rounded-lg border border-gray-100">{notifications[0]?.text ?? 'No recent actions'}</div>
             </div>

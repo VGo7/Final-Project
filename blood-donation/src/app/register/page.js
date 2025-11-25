@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Heart, Users, MapPin, Mail, Lock } from 'lucide-react';
-import { signUp, ADMIN_EMAIL } from '@/utils/auth';
+import { signUp, ADMIN_EMAIL, initFirebase } from '@/utils/auth';
 
 
 export default function RegisterPage() {
@@ -46,12 +46,6 @@ export default function RegisterPage() {
 		}
 
 		setLoading(true);
-		
-		// Navigate immediately - don't wait for auth
-		const targetPage = role === 'hospital' ? '/hospital-landing' : '/donor-landing';
-		router.push(targetPage);
-		
-		// Continue auth in background
 		try {
 			const profile = (role === 'donor') ? {
 				name: form.name,
@@ -63,11 +57,42 @@ export default function RegisterPage() {
 				phone: form.phone || '',
 			};
 
-			await signUp({ email: form.email.trim(), password: form.password, role, profile });
+			// Perform sign up and wait for it to complete
+			const newUser = await signUp({ email: form.email.trim(), password: form.password, role, profile });
+
+			// If Firebase is available and this is a hospital, persist a pending hospital record and wait for it
+			if (role === 'hospital') {
+				try {
+					const fb = await initFirebase();
+					if (fb && fb.db) {
+						const { doc, setDoc } = await import('firebase/firestore');
+						const hospitalId = newUser?.uid || newUser?.id || (form.email || '').replace(/[@.]/g, '_');
+						await setDoc(doc(fb.db, 'hospitals', hospitalId), {
+							name: form.hospitalName,
+							address: form.hospitalAddress || '',
+							phone: form.phone || '',
+							email: form.email.trim(),
+							verified: 'pending',
+							createdAt: new Date().toISOString(),
+							uid: newUser?.uid || null,
+						});
+					}
+				} catch (e) {
+					console.error('Failed to write hospital record to Firestore', e);
+					// proceed anyway — user account exists but hospital doc might have failed to persist
+				}
+			}
+
+			setSuccess(`Registered as ${role} — welcome!`);
+			setForm((s) => ({ ...s, password: '', confirmPassword: '' }));
+
+			// Route after work is complete
+			const targetPage = role === 'hospital' ? '/hospital-landing' : '/donor-landing';
+			router.push(targetPage);
 		} catch (err) {
-			// If auth fails after navigation, you might want to handle this differently
-			// For now, we just log it since user is already on the next page
-			console.error('Background auth error:', err);
+			setError(err?.message || 'Registration failed');
+		} finally {
+			setLoading(false);
 		}
 	}
 

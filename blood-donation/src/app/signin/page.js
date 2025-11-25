@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Heart, Mail, Lock } from 'lucide-react';
-import { signIn, getCurrentUser, ADMIN_EMAIL } from '@/utils/auth';
+import { signIn, getCurrentUser, ADMIN_EMAIL, ADMIN_PASSWORD } from '@/utils/auth';
 
 export default function SignInPage() {
 	const [email, setEmail] = useState('');
@@ -20,6 +20,11 @@ export default function SignInPage() {
 		setLoading(true);
 		try {
 			const user = await signIn(email.trim(), password);
+			// If the credentials match the configured admin account, route to admin dashboard.
+			if (email.trim() === ADMIN_EMAIL && password === ADMIN_PASSWORD) {
+				router.push('/admin-landing');
+				return;
+			}
 			const role = user?.role || 'donor';
 			if (role === 'admin') router.push('/admin-landing');
 			else if (role === 'hospital') router.push('/hospital-landing');

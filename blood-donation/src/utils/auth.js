@@ -37,7 +37,7 @@ export async function initFirebase() {
     return empty;
   }
 
-  const [{ initializeApp }, { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut: fbSignOut }, { getFirestore, doc, setDoc }] =
+  const [{ initializeApp }, { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut: fbSignOut }, { getFirestore, doc, setDoc, getDoc }] =
     await Promise.all([
       import('firebase/app'),
       import('firebase/auth'),
@@ -50,7 +50,17 @@ export async function initFirebase() {
 
   async function signIn(email, password) {
     const cred = await signInWithEmailAndPassword(auth, email, password);
-    return cred.user;
+    const u = cred.user;
+    try {
+      const snap = await getDoc(doc(db, 'users', u.uid));
+      if (snap && snap.exists()) {
+        const data = snap.data();
+        return { uid: u.uid, email: u.email, role: data.role || 'donor', ...(data || {}) };
+      }
+    } catch (e) {
+      // ignore and return basic user
+    }
+    return { uid: u.uid, email: u.email };
   }
 
   async function signUp({ email, password, role = 'donor', profile = {} }) {

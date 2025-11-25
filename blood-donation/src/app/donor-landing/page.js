@@ -153,14 +153,14 @@ export default function DonorLanding() {
           {/* Booking column (left) */}
           <section className="bg-red-50 rounded-3xl p-4 shadow-sm lg:col-span-1 order-first lg:order-0">
             <div className="p-4 rounded-xl border border-red-100">
-              <h5 className="font-semibold mb-2">Book a donation</h5>
+              <h5 className="font-semibold mb-2 text-red-600">Book a donation</h5>
               <p className="text-xs text-gray-500 mb-3">Pick a date and time to schedule your next donation.</p>
               {bookingError && <div className="text-xs text-red-600 mb-2">{bookingError}</div>}
               {bookingSuccess && <div className="text-xs text-green-700 mb-2">{bookingSuccess}</div>}
               <label className="text-xs text-gray-600">Date</label>
-              <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="w-full mt-1 mb-2 p-2 border border-gray-200 rounded" />
+              <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="w-full mt-1 mb-2 p-2 border border-gray-200 rounded text-red-600" />
               <label className="text-xs text-gray-600">Time slot</label>
-              <select value={selectedSlot} onChange={(e) => setSelectedSlot(e.target.value)} className="w-full mt-1 mb-3 p-2 border border-gray-200 rounded">
+              <select value={selectedSlot} onChange={(e) => setSelectedSlot(e.target.value)} className="w-full mt-1 mb-3 p-2 border border-gray-200 rounded text-red-600">
                 <option value="09:00">09:00</option>
                 <option value="10:00">10:00</option>
                 <option value="11:00">11:00</option>
@@ -192,7 +192,7 @@ export default function DonorLanding() {
               {stats.map((s) => (
                 <div key={s.id} className="p-4 rounded-xl bg-red-50 border border-red-50/50 hover:scale-[1.01] transition-transform">
                   <div className="text-xs text-gray-500">{s.label}</div>
-                  <div className="text-2xl font-bold text-gray-900 mt-1">{s.value}</div>
+                  <div className="text-2xl font-bold text-red-600 mt-1">{s.value}</div>
                 </div>
               ))}
             </div>
@@ -206,7 +206,7 @@ export default function DonorLanding() {
                       <div className="font-medium text-gray-900">{r.title}</div>
                       <div className="text-sm text-gray-500">{r.desc}</div>
                     </div>
-                    <div className="text-sm text-gray-400">{r.time}</div>
+                    <div className="text-sm text-red-600">{r.time}</div>
                   </div>
                 ))}
               </div>
@@ -226,17 +226,17 @@ export default function DonorLanding() {
             </div>
 
             <div className="flex flex-col gap-2">
-              <button onClick={() => router.push('/find-drives')} className="w-full px-4 py-2 rounded-lg bg-red-600 text-white font-semibold">Find Drives</button>
-              <button onClick={() => router.push('/appointments')} className="w-full px-4 py-2 rounded-lg bg-white border border-gray-200">My Appointments</button>
+              <button onClick={() => router.push('/find-drives')} className="w-full px-4 py-2 rounded-lg bg-red-600 text-white font-semibold">Book an Appointment</button>
+              <button onClick={() => router.push('/appointments')} className="w-full px-4 py-2 rounded-lg bg-white border border-gray-500 text-red-600">My Appointments</button>
             </div>
 
             <div className="mt-2">
               <div className="flex items-center justify-between">
-                <div className="text-sm font-medium">Location</div>
+                <div className="text-sm font-medium text-gray-700">Location</div>
                 <div className="text-xs text-gray-500">{geoStatus === 'not-enabled' ? 'disabled' : geoStatus === 'fetching' ? 'requesting...' : geoStatus === 'allowed' ? 'allowed' : 'denied'}</div>
               </div>
               <div className="mt-2">
-                <button onClick={enableGeolocation} className="w-full px-3 py-2 rounded bg-white border border-gray-100 mb-2">Enable location</button>
+                <button onClick={enableGeolocation} className="w-full px-3 py-2 rounded bg-white border border-gray-500 mb-2 text-red-600">Enable location</button>
                 {geoStatus === 'allowed' && coords && (
                   <div className="w-full h-36 rounded overflow-hidden border border-gray-100">
                     <iframe
@@ -256,7 +256,7 @@ export default function DonorLanding() {
 
             <div className="mt-auto text-sm text-gray-500">
               <div className="font-medium text-gray-700 mb-1">Next appointment</div>
-              <div className="p-3 bg-white rounded-lg border border-gray-100">Nov 24 • City Hospital</div>
+              <div className="p-3 bg-white rounded-lg border border-gray-300">Nov 24 • City Hospital</div>
             </div>
           </aside>
         </main>

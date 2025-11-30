@@ -1,35 +1,188 @@
 "use client";
-import React, { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
-import { Users, Home, Check, X, LogOut, Bell } from "lucide-react";
+import React, { useEffect, useState, useRef } from 'react';
+import { useRouter } from 'next/navigation';
+import { Users, Home, Check, X, LogOut, Bell } from 'lucide-react';
 import { signOut, initFirebase } from '@/utils/auth';
 
 export default function AdminLanding() {
   const router = useRouter();
+  const mounted = useRef(true);
 
-  // sample pending hospitals and donors (simulated)
-  const [hospitals, setHospitals] = useState([
-    { id: 'h1', name: 'City Hospital', address: '123 Main St', verified: 'pending' },
-    { id: 'h2', name: 'Northside Clinic', address: '45 North Ave', verified: 'pending' },
-  ]);
+  // local fallback sample data (only used when Firestore isn't configured)
+  const SAMPLE_HOSPITALS = [
+    { id: 'h1', name: 'City Hospital', address: '123 Main St', verified: 'pending', createdAt: Date.now() - 1000 * 60 * 60 },
+    { id: 'h2', name: 'Northside Clinic', address: '45 North Ave', verified: 'pending', createdAt: Date.now() - 1000 * 60 * 60 * 2 },
+  ];
 
-  const [donors, setDonors] = useState([
-    { id: 'd1', name: 'Alex Donor', bloodType: 'O+', eligible: 'pending' },
-    { id: 'd2', name: 'Sam Giver', bloodType: 'A-', eligible: 'pending' },
-  ]);
+  const SAMPLE_DONORS = [
+    { id: 'd1', name: 'Alex Donor', bloodType: 'O+', eligible: 'pending', createdAt: Date.now() - 1000 * 60 * 30 },
+  ];
 
-  const [notifications, setNotifications] = useState([
-    { id: 1, text: 'New hospital registration: City Hospital' },
-    { id: 2, text: 'New donor application: Alex Donor' },
-  ]);
+  const [hospitals, setHospitals] = useState([]);
+  const [donors, setDonors] = useState([]);
+  const [users, setUsers] = useState([]);
 
+  // admin read-state (stored in Firestore under 'admin_meta/notifications')
+  const [adminLastRead, setAdminLastRead] = useState(0);
+
+  // derived pending notifications (from Firestore only). When Firebase is not configured notifications will be empty
+  const [pendingHospNotifs, setPendingHospNotifs] = useState([]);
+  const [pendingDonNotifs, setPendingDonNotifs] = useState([]);
+  const notifications = [...pendingHospNotifs, ...pendingDonNotifs].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [actionLoading, setActionLoading] = useState(null);
+
+  const [userSearch, setUserSearch] = useState('');
   const [hospitalSearch, setHospitalSearch] = useState('');
 
-  const [actionLoading, setActionLoading] = useState(null);
+  useEffect(() => {
+    return () => { mounted.current = false; };
+  }, []);
 
   function handleLogout() {
     try { signOut(); } catch (e) {}
     router.push('/signin');
+  }
+
+  // Helper to normalize Firestore timestamps and other formats into millis
+  function toMillis(v) {
+    if (!v) return 0;
+    try {
+      if (typeof v === 'number') return v;
+      if (v.toMillis) return v.toMillis();
+      if (v.seconds) return v.seconds * 1000;
+      const parsed = Date.parse(v);
+      return isNaN(parsed) ? 0 : parsed;
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  // realtime subscriptions: hospitals, donors, admin_meta notifications, users
+  useEffect(() => {
+    let unsubHosp = null;
+    let unsubDon = null;
+    let unsubMeta = null;
+    let unsubUsers = null;
+
+    (async () => {
+      try {
+        const fb = await initFirebase();
+        if (fb && fb.db) {
+          const { collection, onSnapshot, doc } = await import('firebase/firestore');
+
+          // hospitals subscription: keep local copy and derive pending notifications
+          unsubHosp = onSnapshot(collection(fb.db, 'hospitals'), (snap) => {
+            const arr = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+            if (!mounted.current) return;
+            setHospitals(arr);
+            const pending = arr
+              .filter(x => x.verified === 'pending')
+              .map(x => ({ id: `h_${x.id}`, type: 'hospital', refId: x.id, text: `Hospital registration: ${x.name || x.id}`, createdAt: toMillis(x.createdAt) }));
+            // only keep those newer than adminLastRead
+            setPendingHospNotifs(pending.filter(p => (p.createdAt || 0) > (adminLastRead || 0)));
+          }, (err) => console.error('hospitals onSnapshot error', err));
+
+          // donors subscription
+          unsubDon = onSnapshot(collection(fb.db, 'donors'), (snap) => {
+            const arr = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+            if (!mounted.current) return;
+            setDonors(arr);
+            const pending = arr
+              .filter(x => x.eligible === 'pending')
+              .map(x => ({ id: `d_${x.id}`, type: 'donor', refId: x.id, text: `New donor registered: ${x.name || x.id}`, createdAt: toMillis(x.createdAt) }));
+            setPendingDonNotifs(pending.filter(p => (p.createdAt || 0) > (adminLastRead || 0)));
+          }, (err) => console.error('donors onSnapshot error', err));
+
+          // admin meta read-timestamp
+          const metaRef = doc(fb.db, 'admin_meta', 'notifications');
+          unsubMeta = onSnapshot(metaRef, (snap) => {
+            const data = snap.exists() ? snap.data() : null;
+            const ts = data?.lastRead ? toMillis(data.lastRead) : 0;
+            setAdminLastRead(ts);
+          }, (err) => console.error('admin_meta onSnapshot error', err));
+
+          // users snapshot (optional live list)
+          unsubUsers = onSnapshot(collection(fb.db, 'users'), (snap) => {
+            const arr = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+            if (!mounted.current) return;
+            setUsers(arr);
+          }, (err) => console.error('users onSnapshot error', err));
+        } else {
+          // no firebase: load sample fallback so the UI sections still render
+          setHospitals(SAMPLE_HOSPITALS);
+          setDonors(SAMPLE_DONORS);
+          setUsers([]);
+          setPendingHospNotifs([]);
+          setPendingDonNotifs([]);
+        }
+      } catch (e) {
+        console.debug('Firebase subscriptions failed', e);
+      }
+    })();
+
+    return () => {
+      if (typeof unsubHosp === 'function') unsubHosp();
+      if (typeof unsubDon === 'function') unsubDon();
+      if (typeof unsubMeta === 'function') unsubMeta();
+      if (typeof unsubUsers === 'function') unsubUsers();
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // refresh: run a one-off fetch for each collection (useful if you prefer non-subscribed refresh)
+  async function refreshData() {
+    setActionLoading('refresh');
+    try {
+      const fb = await initFirebase();
+      if (fb && fb.db) {
+        const { collection, getDocs } = await import('firebase/firestore');
+        try {
+          const hospSnap = await getDocs(collection(fb.db, 'hospitals'));
+          setHospitals(hospSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+        } catch (e) { console.debug('Failed to fetch hospitals', e); }
+
+        try {
+          const donorsSnap = await getDocs(collection(fb.db, 'donors'));
+          setDonors(donorsSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+        } catch (e) { console.debug('Failed to fetch donors', e); }
+
+        try {
+          const usersSnap = await getDocs(collection(fb.db, 'users'));
+          setUsers(usersSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+        } catch (e) { console.debug('Failed to fetch users', e); }
+      } else {
+        setHospitals(SAMPLE_HOSPITALS);
+        setDonors(SAMPLE_DONORS);
+      }
+    } catch (e) {
+      console.error('refreshData failed', e);
+    } finally {
+      if (mounted.current) setActionLoading(null);
+    }
+  }
+
+  // clear notifications: set admin_meta/notifications.lastRead to now so derived notifications hide
+  async function clearNotifications() {
+    setActionLoading('clear_notifications');
+    try {
+      const fb = await initFirebase();
+      if (fb && fb.db) {
+        const { doc, setDoc, serverTimestamp } = await import('firebase/firestore');
+        const metaRef = doc(fb.db, 'admin_meta', 'notifications');
+        await setDoc(metaRef, { lastRead: serverTimestamp() }, { merge: true });
+      } else {
+        // no-op when Firebase not configured
+        setPendingHospNotifs([]);
+        setPendingDonNotifs([]);
+      }
+      setShowNotifications(false);
+    } catch (e) {
+      console.error('clearNotifications failed', e);
+    } finally {
+      if (mounted.current) setActionLoading(null);
+    }
   }
 
   async function acceptHospital(id) {
@@ -39,18 +192,12 @@ export default function AdminLanding() {
       if (fb && fb.db) {
         const { doc, updateDoc } = await import('firebase/firestore');
         await updateDoc(doc(fb.db, 'hospitals', id), { verified: 'accepted' });
-        setNotifications((n) => [{ id: Date.now(), text: `Hospital ${id} accepted` }, ...n]);
       } else {
-        // fallback to local update
-        await new Promise((r) => setTimeout(r, 600));
-        setHospitals((s) => s.map(h => h.id === id ? { ...h, verified: 'accepted' } : h));
-        setNotifications((n) => [{ id: Date.now(), text: `Hospital ${id} accepted` }, ...n]);
+        setHospitals(s => s.map(h => h.id === id ? { ...h, verified: 'accepted' } : h));
       }
     } catch (e) {
       console.error('acceptHospital failed', e);
-    } finally {
-      setActionLoading(null);
-    }
+    } finally { if (mounted.current) setActionLoading(null); }
   }
 
   async function denyHospital(id) {
@@ -60,64 +207,74 @@ export default function AdminLanding() {
       if (fb && fb.db) {
         const { doc, updateDoc } = await import('firebase/firestore');
         await updateDoc(doc(fb.db, 'hospitals', id), { verified: 'denied' });
-        setNotifications((n) => [{ id: Date.now(), text: `Hospital ${id} denied` }, ...n]);
       } else {
-        await new Promise((r) => setTimeout(r, 600));
-        setHospitals((s) => s.map(h => h.id === id ? { ...h, verified: 'denied' } : h));
-        setNotifications((n) => [{ id: Date.now(), text: `Hospital ${id} denied` }, ...n]);
+        setHospitals(s => s.map(h => h.id === id ? { ...h, verified: 'denied' } : h));
       }
     } catch (e) {
       console.error('denyHospital failed', e);
-    } finally {
-      setActionLoading(null);
-    }
+    } finally { if (mounted.current) setActionLoading(null); }
   }
-
-  // Subscribe to hospitals collection in Firestore (if available) and keep local state in sync
-  useEffect(() => {
-    let unsub = null;
-    (async () => {
-      try {
-        const fb = await initFirebase();
-        if (fb && fb.db) {
-          const { collection, onSnapshot } = await import('firebase/firestore');
-          const col = collection(fb.db, 'hospitals');
-          unsub = onSnapshot(col, (snap) => {
-            const arr = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-            setHospitals(arr);
-          }, (err) => console.error('hospitals onSnapshot error', err));
-        }
-      } catch (e) {
-        console.debug('Firestore not available for hospitals subscription', e);
-      }
-    })();
-
-    return () => { if (typeof unsub === 'function') unsub(); };
-  }, []);
 
   async function acceptDonor(id) {
     setActionLoading(id);
-    await new Promise((r) => setTimeout(r, 600));
-    setDonors((s) => s.map(d => d.id === id ? { ...d, eligible: 'accepted' } : d));
-    setNotifications((n) => [{ id: Date.now(), text: `Donor ${id} accepted` }, ...n]);
-    setActionLoading(null);
+    try {
+      const fb = await initFirebase();
+      if (fb && fb.db) {
+        const { doc, updateDoc } = await import('firebase/firestore');
+        await updateDoc(doc(fb.db, 'donors', id), { eligible: 'accepted' });
+      } else {
+        setDonors(s => s.map(d => d.id === id ? { ...d, eligible: 'accepted' } : d));
+      }
+    } catch (e) {
+      console.error('acceptDonor failed', e);
+    } finally { if (mounted.current) setActionLoading(null); }
   }
 
   async function denyDonor(id) {
     setActionLoading(id);
-    await new Promise((r) => setTimeout(r, 600));
-    setDonors((s) => s.map(d => d.id === id ? { ...d, eligible: 'denied' } : d));
-    setNotifications((n) => [{ id: Date.now(), text: `Donor ${id} denied` }, ...n]);
-    setActionLoading(null);
+    try {
+      const fb = await initFirebase();
+      if (fb && fb.db) {
+        const { doc, updateDoc } = await import('firebase/firestore');
+        await updateDoc(doc(fb.db, 'donors', id), { eligible: 'denied' });
+      } else {
+        setDonors(s => s.map(d => d.id === id ? { ...d, eligible: 'denied' } : d));
+      }
+    } catch (e) {
+      console.error('denyDonor failed', e);
+    } finally { if (mounted.current) setActionLoading(null); }
+  }
+
+  // delete user from 'users' collection (or local state when Firebase absent)
+  async function deleteUser(id) {
+    setActionLoading(id);
+    try {
+      const fb = await initFirebase();
+      if (fb && fb.db) {
+        const { doc, deleteDoc } = await import('firebase/firestore');
+        await deleteDoc(doc(fb.db, 'users', id));
+      } else {
+        setUsers(s => s.filter(u => u.id !== id));
+      }
+    } catch (e) {
+      console.error('deleteUser failed', e);
+    } finally { if (mounted.current) setActionLoading(null); }
   }
 
   const pendingHospitals = hospitals.filter(h => h.verified === 'pending');
   const pendingDonors = donors.filter(d => d.eligible === 'pending');
   const existingHospitals = hospitals.filter(h => h.verified === 'accepted');
+
   const filteredHospitals = existingHospitals.filter(h => {
     if (!hospitalSearch) return true;
     const q = hospitalSearch.toLowerCase();
-    return h.name.toLowerCase().includes(q) || (h.address || '').toLowerCase().includes(q);
+    return (h.name || '').toLowerCase().includes(q) || (h.address || '').toLowerCase().includes(q);
+  });
+
+  const filteredUsers = users.filter(u => {
+    if (!userSearch) return true;
+    const q = userSearch.toLowerCase();
+    return (u.name || '').toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q) || (u.role || '').toLowerCase().includes(q);
   });
 
   return (
@@ -135,12 +292,32 @@ export default function AdminLanding() {
           </div>
 
           <div className="flex items-center gap-3">
-            <button className="relative p-2 rounded-lg bg-white border border-gray-200 shadow-sm" title="Notifications">
-              <Bell className="w-5 h-5 text-gray-600" />
-              {notifications.length > 0 && (
-                <span className="absolute -top-1 -right-1 inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-bold leading-none text-white bg-red-600 rounded-full">{notifications.length}</span>
+            <div className="relative">
+              <button aria-haspopup="true" aria-expanded={showNotifications} onClick={() => setShowNotifications(s => !s)} className="relative p-2 rounded-lg bg-white border border-gray-200 shadow-sm" title="Notifications">
+                <Bell className="w-5 h-5 text-gray-600" />
+                {notifications.length > 0 && (
+                  <span className="absolute -top-1 -right-1 inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-bold leading-none text-white bg-red-600 rounded-full">{notifications.length}</span>
+                )}
+              </button>
+
+              {showNotifications && (
+                <div role="menu" aria-label="Notifications" className="absolute right-0 mt-2 w-96 max-h-80 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-lg z-50">
+                  <div className="p-3 border-b text-sm font-semibold flex items-center justify-between">
+                    <span>Notifications</span>
+                    <button onClick={clearNotifications} disabled={actionLoading==='clear_notifications'} className="text-xs text-red-600">{actionLoading==='clear_notifications' ? 'Clearing...' : 'Mark read'}</button>
+                  </div>
+                  <div className="p-2">
+                    {notifications.length === 0 && <div className="text-sm text-gray-500 p-2">No new pending hospitals or donors.</div>}
+                    {notifications.map((n) => (
+                      <div key={n.id} className="w-full text-left p-2 hover:bg-gray-50 rounded">
+                        <div className="text-xs text-gray-500">{n.type === 'hospital' ? 'Hospital' : 'Donor'}</div>
+                        <div className="text-sm text-gray-900">{n.text}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
-            </button>
+            </div>
 
             <button onClick={handleLogout} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white border border-gray-200 shadow-sm">
               <LogOut className="w-4 h-4 text-gray-600" />
@@ -150,32 +327,40 @@ export default function AdminLanding() {
         </header>
 
         <main className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-          {/* Left: Existing Hospitals (searchable) */}
+          {/* Left: Users (searchable, scrollable) */}
           <section className="bg-white rounded-3xl p-4 shadow-sm lg:col-span-1">
-            <h4 className="font-semibold mb-3 text-red-600">Existing Hospitals</h4>
+            <h4 className="font-semibold mb-3 text-red-600">Users</h4>
             <div className="mb-3">
               <input
                 type="search"
-                value={hospitalSearch}
-                onChange={(e) => setHospitalSearch(e.target.value)}
-                placeholder="Search hospitals by name or address"
+                value={userSearch}
+                onChange={(e) => setUserSearch(e.target.value)}
+                placeholder="Search users by name, email or role"
                 className="w-full px-3 py-2 border rounded-lg text-red-600 focus:ring-2 focus:ring-red-600"
               />
             </div>
-            <div className="space-y-3">
-              {filteredHospitals.length > 0 ? (
-                filteredHospitals.map((h) => (
-                  <div key={h.id} className="p-3 bg-white rounded-lg border border-gray-100 flex flex-col gap-2">
-                    <div className="font-medium text-red-600">{h.name}</div>
-                    <div className="text-xs text-gray-700">{h.address}</div>
+            <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-2">
+              {filteredUsers.length > 0 ? (
+                filteredUsers.map((u) => (
+                  <div key={u.id || u.email} className="p-3 bg-white rounded-lg border border-gray-100 flex flex-col gap-2">
+                    <div className="font-medium text-red-600">{u.name || u.email || 'Unknown'}</div>
+                    <div className="text-xs text-gray-700">{u.email}</div>
                     <div className="flex items-center gap-2 mt-2">
-                      <span className="text-sm text-green-700">{h.verified}</span>
-                      <button onClick={() => setHospitals(s => s.filter(x => x.id !== h.id))} className="px-3 py-2 rounded bg-white text-red-600 border">Remove</button>
+                      <span className="text-sm text-gray-600">{u.role || 'donor'}</span>
+                      <div className="ml-auto">
+                        <button
+                          onClick={() => { if (confirm('Delete user? This cannot be undone.')) deleteUser(u.id); }}
+                          disabled={actionLoading===u.id}
+                          className="px-2 py-1 rounded bg-white border border-gray-200 text-sm text-red-600"
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))
               ) : (
-                <div className="text-sm text-gray-500">No hospitals found.</div>
+                <div className="text-sm text-gray-500">No users found.</div>
               )}
             </div>
           </section>
@@ -213,6 +398,8 @@ export default function AdminLanding() {
                 {pendingHospitals.length === 0 && <div className="text-sm text-gray-500">No hospitals pending review.</div>}
               </div>
             </div>
+
+            {/* Pending donors removed from center view per request */}
           </section>
 
           {/* Right: Quick actions / admin info */}
@@ -228,12 +415,12 @@ export default function AdminLanding() {
             </div>
 
             <div className="flex flex-col gap-2">
-              <button onClick={() => { setHospitals((s)=>s); setDonors((d)=>d); }} className="w-full px-4 py-2 rounded-lg bg-red-600 text-white font-semibold">Refresh</button>
-              <button onClick={() => { setNotifications([]); }} className="w-full px-4 py-2 rounded-lg bg-white border border-gray-500 text-red-600">Clear notifications</button>
+              <button disabled={Boolean(actionLoading)} onClick={refreshData} className="w-full px-4 py-2 rounded-lg bg-red-600 text-white font-semibold">{actionLoading==='refresh' ? 'Refreshing...' : 'Refresh'}</button>
+              <button disabled={Boolean(actionLoading)} onClick={clearNotifications} className="w-full px-4 py-2 rounded-lg bg-white border border-gray-500 text-red-600">Mark notifications read</button>
             </div>
 
             <div className="mt-auto text-sm text-red-600">
-              <div className="font-medium text-gray-700 mb-1">Last action</div>
+              <div className="font-medium text-gray-700 mb-1">Last notification</div>
               <div className="p-3 bg-white rounded-lg border border-gray-100">{notifications[0]?.text ?? 'No recent actions'}</div>
             </div>
           </aside>

@@ -37,6 +37,7 @@ export default function RegisterPage() {
 		if (!form.password || form.password.length < 8) return setError('Password must be at least 8 characters.');
 		if (form.password !== form.confirmPassword) return setError('Passwords do not match.');
 		if (role === 'donor' && !form.name) return setError('Please enter your name.');
+		if (role === 'donor' && !form.phone) return setError('Please enter your phone number.');
 		if (role === 'hospital' && !form.hospitalName) return setError('Please enter the hospital name.');
 
 		// Check for reserved admin email
@@ -151,7 +152,7 @@ export default function RegisterPage() {
 							<div className="text-red-600 relative">
 								<label htmlFor="phone" className="sr-only">Phone</label>
 								<Users className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-red-600" />
-								<input id="phone" value={form.phone} onChange={(e) => update('phone', e.target.value)} placeholder="Phone (optional)" className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-600" />
+								<input id="phone" value={form.phone} onChange={(e) => update('phone', e.target.value)} placeholder="Phone" required className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-600" />
 							</div>
 
 							<div className="text-red-600">

@@ -277,6 +277,9 @@ export default function AdminLanding() {
     return (u.name || '').toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q) || (u.role || '').toLowerCase().includes(q);
   });
 
+  // count users whose role is 'donor'
+  const totalDonorUsers = users.filter(u => (u.role || '').toLowerCase() === 'donor').length;
+
   return (
     <div className="min-h-screen bg-linear-to-br from-red-50 via-white to-pink-50 p-6">
       <div className="max-w-6xl mx-auto">
@@ -377,7 +380,10 @@ export default function AdminLanding() {
             <div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="p-4 rounded-xl bg-red-50 border"> <div className="text-xs text-gray-500">Existing Hospitals</div> <div className="text-2xl font-bold text-red-600">{existingHospitals.length}</div> </div>
               <div className="p-4 rounded-xl bg-red-50 border"> <div className="text-xs text-gray-500">Hospitals pending</div> <div className="text-2xl font-bold text-red-600">{pendingHospitals.length}</div> </div>
-              <div className="p-4 rounded-xl bg-red-50 border"> <div className="text-xs text-gray-500">Total notifications</div> <div className="text-2xl font-bold text-red-600">{notifications.length}</div> </div>
+              <div className="p-4 rounded-xl bg-red-50 border">
+                <div className="text-xs text-gray-500">Total donors</div>
+                <div className="text-2xl font-bold text-red-600">{totalDonorUsers}</div>
+              </div>
             </div>
 
             <div className="mt-6">
@@ -398,8 +404,6 @@ export default function AdminLanding() {
                 {pendingHospitals.length === 0 && <div className="text-sm text-gray-500">No hospitals pending review.</div>}
               </div>
             </div>
-
-            {/* Pending donors removed from center view per request */}
           </section>
 
           {/* Right: Quick actions / admin info */}
@@ -417,11 +421,6 @@ export default function AdminLanding() {
             <div className="flex flex-col gap-2">
               <button disabled={Boolean(actionLoading)} onClick={refreshData} className="w-full px-4 py-2 rounded-lg bg-red-600 text-white font-semibold">{actionLoading==='refresh' ? 'Refreshing...' : 'Refresh'}</button>
               <button disabled={Boolean(actionLoading)} onClick={clearNotifications} className="w-full px-4 py-2 rounded-lg bg-white border border-gray-500 text-red-600">Mark notifications read</button>
-            </div>
-
-            <div className="mt-auto text-sm text-red-600">
-              <div className="font-medium text-gray-700 mb-1">Last notification</div>
-              <div className="p-3 bg-white rounded-lg border border-gray-100">{notifications[0]?.text ?? 'No recent actions'}</div>
             </div>
           </aside>
         </main>

@@ -36,22 +36,14 @@ export default function DonorLanding() {
 
   // bookings persisted per-donor in Firestore
   const [bookings, setBookings] = useState([]);
-  // modal state for creating a booking (opens from right column)
-  const [showBookingModal, setShowBookingModal] = useState(false);
-  const [modalDate, setModalDate] = useState('');
-  const [modalSlot, setModalSlot] = useState('09:00');
-  const [modalQuantity, setModalQuantity] = useState(1);
-  const [modalBloodType, setModalBloodType] = useState('');
-  const [modalLocation, setModalLocation] = useState('');
-  const [modalNotes, setModalNotes] = useState('');
-  const [modalLoading, setModalLoading] = useState(false);
-  const [modalError, setModalError] = useState('');
-  const [modalSuccess, setModalSuccess] = useState('');
+
+  // Requests loaded from Firestore for this donor (replaces local `recent` list)
 
   // profile fetched from Firestore (full name and blood type)
   const [fullName, setFullName] = useState('');
   const [bloodType, setBloodType] = useState('');
   const [verified, setVerified] = useState(false);
+  const [profilePhone, setProfilePhone] = useState('');
 
   useEffect(() => {
     let t;
@@ -85,6 +77,7 @@ export default function DonorLanding() {
             setFullName('');
             setBloodType('');
             setVerified(false);
+            setProfilePhone('');
             return;
           }
 
@@ -95,10 +88,12 @@ export default function DonorLanding() {
               const name = data.name || data.fullName || `${data.firstName || ''} ${data.lastName || ''}`.trim() || user.email || '';
               setFullName(name);
               setBloodType(data.bloodType || data.blood || '');
+              setProfilePhone(data.phone || data.mobile || data.contact || '');
               setVerified(Boolean(data.verified));
             } else {
               setFullName('');
               setBloodType('');
+              setProfilePhone('');
               setVerified(false);
             }
           } catch (e) {
@@ -154,10 +149,11 @@ export default function DonorLanding() {
             });
 
             // bookings for this donor
-            const qBookings = query(collection(fb.db, 'bookings'), where('donorId', '==', uid), orderBy('createdAt', 'desc'));
+            const qBookings = query(collection(fb.db, 'bookings'), where('donorId', '==', uid));
             if (typeof unsubBookings === 'function') unsubBookings();
             unsubBookings = onSnapshot(qBookings, (snap) => {
-              const items = snap.docs.map(d => ({ id: d.id, ...(d.data() || {}) }));
+              const items = snap.docs.map(d => ({ id: d.id, ...(d.data() || {}) }))
+                .sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
               if (mounted) setBookings(items);
             }, (err) => {
               console.error('bookings onSnapshot error', err);
@@ -233,9 +229,27 @@ export default function DonorLanding() {
     try {
       if (typeof v.toDate === 'function') return v.toDate();
       const d = new Date(v);
-      if (!isNaN(d)) return d;
+      if (!isNaN(d.getTime())) return d;
     } catch (e) {}
     return null;
+  }
+
+  // Safely format location-like fields so we don't render raw objects into JSX
+  function formatLocationField(v) {
+    if (!v) return '';
+    try {
+      if (typeof v === 'object') {
+        const lat = v.lat ?? v.latitude ?? v.latDegrees;
+        const lon = v.lon ?? v.lng ?? v.longitude ?? v.lonDegrees;
+        if (typeof lat === 'number' && typeof lon === 'number') {
+          return `Lat ${lat.toFixed(5)}, Lon ${lon.toFixed(5)}`;
+        }
+        return Object.keys(v).length ? JSON.stringify(v) : '';
+      }
+      return String(v);
+    } catch (e) {
+      return '';
+    }
   }
 
   const donationsCount = requests.filter(r => {
@@ -250,13 +264,8 @@ export default function DonorLanding() {
     return sum + qty * multiplier;
   }, 0);
 
-  const nextDrive = (() => {
-    const now = new Date();
-    const dates = requests.map(r => parseDateField(r.driveDate || r.date || r.appointmentDate || r.createdAt)).filter(Boolean).filter(d => d > now);
-    if (!dates.length) return 'None';
-    dates.sort((a, b) => a - b);
-    return dates[0].toLocaleDateString();
-  })();
+  // Force Next Drive to always display 'None' so it's unaffected by data
+  const nextDrive = 'None';
 
   const stats = [
     { id: 1, label: 'Donations', value: String(donationsCount) },
@@ -340,52 +349,204 @@ export default function DonorLanding() {
     }
   }
 
-  async function handleModalSubmit(e) {
+  // Modal for booking with extra donation details
+  const [showBookingModal, setShowBookingModal] = useState(false);
+  const [modalDate, setModalDate] = useState('');
+  const [modalSlot, setModalSlot] = useState('09:00');
+  const [modalBloodType, setModalBloodType] = useState(bloodType || '');
+  const [modalQuantity, setModalQuantity] = useState(1);
+  const [modalPhone, setModalPhone] = useState('');
+  const [modalWeight, setModalWeight] = useState('');
+  const [modalLastDonation, setModalLastDonation] = useState('');
+  const [modalNotes, setModalNotes] = useState('');
+  const [modalDob, setModalDob] = useState('');
+  const [fieldErrors, setFieldErrors] = useState({});
+  const [attachLocation, setAttachLocation] = useState(false);
+  const [modalLocation, setModalLocation] = useState(null);
+  const [locationError, setLocationError] = useState('');
+
+  // Autofill modal fields from profile when available (don't override user edits)
+  useEffect(() => {
+    if (profilePhone && !modalPhone) setModalPhone(profilePhone);
+    if (bloodType && !modalBloodType) setModalBloodType(bloodType);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profilePhone, bloodType]);
+
+  async function submitModalBooking(e) {
     e?.preventDefault?.();
-    setModalError('');
-    setModalSuccess('');
-    if (!modalDate) return setModalError('Please pick a date');
-    setModalLoading(true);
+    setBookingError('');
+    setBookingLoading(true);
+    console.debug('submitModalBooking start', { modalDate, modalSlot, modalBloodType, modalQuantity, modalPhone, modalWeight, modalLastDonation, modalDob, attachLocation, modalLocation });
+    // If Firebase env not configured, inform the user explicitly
+    if (!process.env.NEXT_PUBLIC_FIREBASE_API_KEY) {
+      setBookingError('Firebase not configured in this environment — request cannot be sent to hospitals.');
+      console.warn('submitModalBooking aborted: NEXT_PUBLIC_FIREBASE_API_KEY not set');
+      setBookingLoading(false);
+      return;
+    }
     try {
+      // client-side validation according to donation requirements
+      setFieldErrors({});
+      const errors = {};
+      const today = new Date();
+      if (!modalDate) errors.date = 'Please select a donation date.';
+      else {
+        const sel = new Date(modalDate + 'T00:00:00');
+        if (sel < new Date(today.toDateString())) errors.date = 'Donation date cannot be in the past.';
+      }
+      // DOB / age check (must be >=18)
+      if (!modalDob) errors.dob = 'Please enter your date of birth.';
+      else {
+        const dob = new Date(modalDob);
+        if (isNaN(dob)) errors.dob = 'Invalid date of birth.';
+        else {
+          const age = Math.floor((Date.now() - dob.getTime()) / (365.25 * 24 * 60 * 60 * 1000));
+          if (age < 18) errors.dob = 'You must be at least 18 years old to donate.';
+        }
+      }
+      // weight
+      const weightNum = Number(modalWeight || 0);
+      if (!modalWeight || isNaN(weightNum)) errors.weight = 'Please enter your weight.';
+      else if (weightNum < 50) errors.weight = 'Minimum weight to donate is 50 kg.';
+      // quantity
+      const qtyNum = Number(modalQuantity || 0);
+      if (!qtyNum || isNaN(qtyNum) || qtyNum < 1) errors.quantity = 'Quantity must be at least 1 unit.';
+      // phone
+      const phoneRe = /^\+?[0-9\s\-]{7,20}$/;
+      if (!modalPhone || !phoneRe.test(modalPhone)) errors.phone = 'Enter a valid phone number.';
+      // blood type
+      const btRe = /^(A|B|AB|O)[+-]$/i;
+      if (!modalBloodType || !btRe.test(modalBloodType)) errors.bloodType = 'Enter a blood type like O+, A-, AB+.';
+      // last donation interval (minimum 56 days)
+      if (modalLastDonation) {
+        const last = new Date(modalLastDonation);
+        if (!isNaN(last) && modalDate) {
+          const sel = new Date(modalDate + 'T00:00:00');
+          const diffDays = Math.floor((sel - last) / (24 * 60 * 60 * 1000));
+          if (diffDays < 56) errors.lastDonation = 'At least 56 days must pass since your last donation.';
+        }
+      }
+      // location: if user requested to attach location, ensure we have coords
+      if (attachLocation && !modalLocation) {
+        errors.location = 'Unable to obtain your current location. Please allow location access or uncheck the option.';
+      }
+
+      if (Object.keys(errors).length) {
+        setFieldErrors(errors);
+        setBookingLoading(false);
+        return;
+      }
       if (process.env.NEXT_PUBLIC_FIREBASE_API_KEY) {
         const fb = await initFirebase();
         if (fb && fb.db && fb.auth) {
           const user = fb.auth.currentUser;
           const uid = user?.uid || null;
-          const { collection, addDoc, serverTimestamp } = await import('firebase/firestore');
-          await addDoc(collection(fb.db, 'bookings'), {
+          const { collection, addDoc, serverTimestamp, query, where, getDocs } = await import('firebase/firestore');
+
+          // create a donor_offers document representing this request that hospitals can accept/deny
+          const offerPayload = {
             donorId: uid,
             donorName: fullName || null,
-            bloodType: modalBloodType || bloodType || null,
-            quantity: Number(modalQuantity) || 1,
-            date: modalDate,
-            slot: modalSlot,
+            phone: modalPhone || null,
+            bloodType: modalBloodType || null,
+            quantity: Number(qtyNum) || 1,
+            weightKg: Number(weightNum) || null,
+            lastDonationDate: modalLastDonation || null,
+            dob: modalDob || null,
             location: modalLocation || null,
             notes: modalNotes || null,
-            status: 'booked',
+            requestedDate: modalDate,
+            requestedSlot: modalSlot,
+            status: 'requested',
             createdAt: serverTimestamp(),
-          });
-          setModalSuccess('Appointment requested');
+          };
+
+          const offersRef = collection(fb.db, 'donor_offers');
+          const offerDoc = await addDoc(offersRef, offerPayload);
+          const offerId = offerDoc.id;
+
+          // notify all hospital users so they can accept/deny this request
+          try {
+            const usersRef = collection(fb.db, 'users');
+            const qHosp = query(usersRef, where('role', '==', 'hospital'));
+            const snaps = await getDocs(qHosp);
+            const notifRef = collection(fb.db, 'notifications');
+            snaps.forEach(async (u) => {
+              try {
+                await addDoc(notifRef, {
+                  recipientId: u.id,
+                  type: 'donor_request',
+                  donorOfferId: offerId,
+                  message: `New donor request from ${fullName || 'a donor'}`,
+                  createdAt: serverTimestamp(),
+                  read: false,
+                });
+              } catch (e) {
+                console.error('failed to create notification for hospital', u.id, e);
+              }
+            });
+          } catch (e) {
+            console.error('failed to notify hospitals', e);
+          }
+
+          setBookingSuccess('Request sent to hospitals');
           setShowBookingModal(false);
-          // reset form
-          setModalDate('');
-          setModalSlot('09:00');
+          // clear modal fields
           setModalQuantity(1);
+          setModalPhone('');
+          setModalWeight('');
+          setModalLastDonation('');
           setModalNotes('');
-          setModalLocation('');
+          setModalDob('');
+          setAttachLocation(false);
+          setModalLocation(null);
+          setLocationError('');
+          setFieldErrors({});
           return;
         }
       }
 
-      // fallback
-      await new Promise((r) => setTimeout(r, 600));
-      setModalSuccess('Appointment requested (local)');
+      // fallback simulated booking
+      await new Promise((res) => setTimeout(res, 800));
+      setBookingSuccess(`Booked ${modalDate} at ${modalSlot}`);
       setShowBookingModal(false);
     } catch (err) {
-      console.error('handleModalSubmit error', err);
-      setModalError('Failed to request appointment');
+      console.error('submitModalBooking error', err);
+      setBookingError('Failed to book appointment.');
     } finally {
-      setModalLoading(false);
+      setBookingLoading(false);
+    }
+  }
+
+  // Request and attach user's current location when toggled in the modal
+  function handleAttachLocationToggle(next) {
+    setLocationError('');
+    if (!next) {
+      setAttachLocation(false);
+      setModalLocation(null);
+      return;
+    }
+    if (!navigator.geolocation) {
+      setLocationError('Geolocation not supported by your browser.');
+      setAttachLocation(false);
+      return;
+    }
+    setAttachLocation(true);
+    try {
+      navigator.geolocation.getCurrentPosition((pos) => {
+        setModalLocation({ lat: pos.coords.latitude, lon: pos.coords.longitude });
+        setLocationError('');
+      }, (err) => {
+        console.error('getCurrentPosition error', err);
+        setLocationError('Location permission denied or unavailable.');
+        setAttachLocation(false);
+        setModalLocation(null);
+      }, { enableHighAccuracy: true, maximumAge: 60 * 1000 });
+    } catch (e) {
+      console.error('handleAttachLocationToggle error', e);
+      setLocationError('Failed to obtain location.');
+      setAttachLocation(false);
+      setModalLocation(null);
     }
   }
 
@@ -442,29 +603,55 @@ export default function DonorLanding() {
         <main className="grid grid-cols-1 lg:grid-cols-4 gap-6">
           {/* Incoming appointments (left) */}
           <section className="bg-white rounded-3xl p-4 shadow-sm lg:col-span-1 order-first lg:order-0">
-            <div className="p-4 rounded-xl border border-gray-100">
+            <div className="p-4 rounded-xl border border-gray-100 max-h-[40vh] md:max-h-[calc(100vh-12rem)] overflow-y-auto pr-2">
               <h5 className="font-semibold mb-2 text-red-600">Incoming appointments</h5>
-              <p className="text-xs text-gray-500 mb-3">Your upcoming appointments and their status.</p>
-              {bookings.length === 0 && (
-                <div className="text-sm text-gray-500">No upcoming appointments.</div>
-              )}
-              <div className="space-y-3">
-                {bookings.map((b) => {
-                  const d = parseDateField(b.date || b.createdAt) || (b.date ? new Date(b.date) : null);
-                  const dateLabel = d ? d.toLocaleDateString() + (b.slot ? ` • ${b.slot}` : '') : (b.date || '—');
-                  return (
-                    <div key={b.id} className="p-3 bg-white rounded-lg border border-gray-100">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className="font-medium text-gray-900">{b.hospital || b.location || 'Appointment'}</div>
-                          <div className="text-xs text-gray-500">{dateLabel}</div>
+              <p className="text-xs text-gray-500 mb-3">Your accepted appointments by hospitals.</p>
+              {(() => {
+                // Merge accepted bookings with any donor_offers that are marked accepted but not yet present in bookings
+                const acceptedBookings = bookings.filter(b => (b.status || '').toString().toLowerCase() === 'accepted');
+                const acceptedFromRequests = requests.filter(r => (r.status || '').toString().toLowerCase() === 'accepted');
+                const mergedAccepted = [
+                  ...acceptedBookings,
+                  ...acceptedFromRequests.filter(r => !acceptedBookings.some(b => b.donorOfferId === r.id))
+                ];
+
+                if (mergedAccepted.length === 0) {
+                  return <div className="text-sm text-gray-500">No accepted appointments yet.</div>;
+                }
+
+                return (
+                  <div className="space-y-3">
+                    {mergedAccepted.map((b) => {
+                      // b may be a booking (has donorOfferId/hospitalName) or a request (has requestedDate/requestedSlot)
+                      // Check for requestedDate first (donor_offers), then appointmentDate (bookings), then date
+                      const rawDate = b.requestedDate || b.appointmentDate || b.date;
+                      const d = parseDateField(rawDate) || null;
+                      const slot = b.requestedSlot || b.appointmentSlot || b.slot || '';
+                      // Format the date - use parsed date if available, otherwise use raw string value
+                      const dateStr = d ? d.toLocaleDateString() : (rawDate || '—');
+                      const timeStr = slot ? String(slot) : '';
+                      const hospitalName = b.hospitalName || b.hospital || b.location || b.acceptedBy?.email || 'Hospital';
+                      return (
+                        <div key={b.id} className="p-3 bg-green-50 rounded-lg border border-green-200">
+                          <div className="flex items-start gap-3">
+                            <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center">
+                              <Calendar className="w-5 h-5 text-green-600" />
+                            </div>
+                            <div className="flex-1">
+                              <div className="font-medium text-gray-900">{hospitalName}</div>
+                              <div className="flex items-center gap-3 text-xs text-gray-500 mt-1">
+                                <span className="inline-flex items-center gap-1"><Calendar className="w-3 h-3" />{dateStr}</span>
+                                {timeStr && <span className="inline-flex items-center gap-1">{timeStr}</span>}
+                              </div>
+                              {b.bloodType && <div className="text-xs text-gray-600 mt-2">Blood: {b.bloodType} • Qty: {b.quantity || 1}</div>}
+                            </div>
+                          </div>
                         </div>
-                        <div className="text-sm font-semibold text-red-600">{(b.status || 'booked')}</div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </div>
           </section>
 
@@ -494,13 +681,13 @@ export default function DonorLanding() {
               <h4 className="text-lg font-semibold text-gray-900">Recent Requests</h4>
                 <div className="mt-3 grid gap-3">
                   {requests.length === 0 && (
-                    <div className="text-sm text-gray-500">No requests found.</div>
-                  )}
-                  {requests.map((r) => (
-                    <div key={r.id} className="flex items-center justify-between p-3 bg-white border border-gray-100 rounded-lg shadow-sm">
+                      <div className="text-sm text-gray-500">No requests found.</div>
+                    )}
+                    {requests.filter(r => (r.status || '').toString().toLowerCase() !== 'accepted').map((r) => (
+                      <div key={r.id} className="flex items-center justify-between p-3 bg-white border border-gray-100 rounded-lg shadow-sm">
                       <div>
                         <div className="font-medium text-gray-900">{r.title || r.donor || `Request ${r.id}`}</div>
-                        <div className="text-sm text-gray-500">{r.location || r.hospital || r.message || (r.bloodType ? `Blood: ${r.bloodType} • Qty: ${r.quantity || 1}` : '')}</div>
+                        <div className="text-sm text-gray-500">{(formatLocationField(r.location) || r.hospital || r.message) || (r.bloodType ? `Blood: ${r.bloodType} • Qty: ${r.quantity || 1}` : '')}</div>
                       </div>
                       <div className="text-sm text-red-600">{r.status ? r.status : (r.createdAt ? new Date(r.createdAt).toLocaleString() : '')}</div>
                     </div>
@@ -522,7 +709,7 @@ export default function DonorLanding() {
             </div>
 
             <div className="flex flex-col gap-2">
-              <button onClick={() => { setShowBookingModal(true); setModalBloodType(bloodType || ''); }} className="w-full px-4 py-2 rounded-lg bg-red-600 text-white font-semibold">Book an Appointment</button>
+              <button onClick={() => setShowBookingModal(true)} className="w-full px-4 py-2 rounded-lg bg-red-600 text-white font-semibold">Book an Appointment</button>
             </div>
 
             <div className="mt-2">
@@ -531,7 +718,9 @@ export default function DonorLanding() {
                 <div className="text-xs text-gray-500">{geoStatus === 'not-enabled' ? 'disabled' : geoStatus === 'fetching' ? 'requesting...' : geoStatus === 'allowed' ? 'allowed' : 'denied'}</div>
               </div>
               <div className="mt-2">
-                <button onClick={enableGeolocation} className="w-full px-3 py-2 rounded bg-white border border-gray-500 mb-2 text-red-600">Enable location</button>
+                {geoStatus !== 'allowed' && (
+                  <button onClick={enableGeolocation} className="w-full px-3 py-2 rounded bg-white border border-gray-500 mb-2 text-red-600">Enable location</button>
+                )}
                 {geoStatus === 'allowed' && coords && (
                   <div className="w-full h-36 rounded overflow-hidden border border-gray-100">
                     <iframe
@@ -541,15 +730,113 @@ export default function DonorLanding() {
                       loading="lazy"
                     />
                   </div>
-                )}
-                <div className="mt-2 flex items-center gap-2">
-                  <button onClick={shareLocationWithHospitals} className="flex-1 px-3 py-2 rounded bg-red-600 text-white">Share location</button>
-                </div>
-                {geoShared && <div className="text-xs text-green-700 mt-2">Location shared (simulated)</div>}
+                )} 
               </div>
             </div>
             
           </aside>
+          {showBookingModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+              <div className="absolute inset-0 bg-black/40" onClick={() => setShowBookingModal(false)} />
+              <form onSubmit={submitModalBooking} className="relative z-10 w-full max-w-2xl bg-white rounded-2xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
+                <div className="flex items-start justify-between mb-4">
+                  <div>
+                    <h4 className="text-xl font-semibold text-red-600">Book Appointment</h4>
+                    <p className="text-xs text-gray-500">Provide the details below to complete your donation booking.</p>
+                  </div>
+                  <button type="button" onClick={() => setShowBookingModal(false)} aria-label="Close" className="text-gray-500 hover:text-gray-700">✕</button>
+                </div>
+
+                {bookingError && <div className="text-xs text-red-600 mb-2">{bookingError}</div>}
+                {bookingSuccess && <div className="text-xs text-green-700 mb-2">{bookingSuccess}</div>}
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs text-gray-600">Date <span className="text-red-600">*</span></label>
+                    <input required type="date" value={modalDate} onChange={(e) => setModalDate(e.target.value)} className="w-full mt-1 p-2 border border-gray-500 text-red-600 rounded" />
+                    {fieldErrors.date && <div className="text-xs text-red-600 mt-1">{fieldErrors.date}</div>}
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-gray-600">Time slot</label>
+                    <select required value={modalSlot} onChange={(e) => setModalSlot(e.target.value)} className="w-full mt-1 p-2 border border-gray-500 text-red-600 rounded">
+                      <option value="09:00">09:00</option>
+                      <option value="10:00">10:00</option>
+                      <option value="11:00">11:00</option>
+                      <option value="13:00">13:00</option>
+                      <option value="14:00">14:00</option>
+                      <option value="15:00">15:00</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-gray-600">Blood type</label>
+                    <input required value={modalBloodType} onChange={(e) => setModalBloodType(e.target.value)} placeholder="e.g. O+" className="w-full mt-1 p-2 border border-gray-500 text-red-600 rounded" />
+                    {fieldErrors.bloodType && <div className="text-xs text-red-600 mt-1">{fieldErrors.bloodType}</div>}
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-gray-600">Quantity (units)</label>
+                    <input required type="number" min={1} value={modalQuantity} onChange={(e) => setModalQuantity(Number(e.target.value || 1))} className="w-full mt-1 p-2 border border-gray-500 text-red-600 rounded" />
+                    {fieldErrors.quantity && <div className="text-xs text-red-600 mt-1">{fieldErrors.quantity}</div>}
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-gray-600">Weight (kg)</label>
+                    <input required value={modalWeight} onChange={(e) => setModalWeight(e.target.value)} placeholder="e.g. 70" className="w-full mt-1 p-2 border border-gray-500 text-red-600 rounded" />
+                    {fieldErrors.weight && <div className="text-xs text-red-600 mt-1">{fieldErrors.weight}</div>}
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-gray-600">Date of birth</label>
+                    <input required type="date" value={modalDob} onChange={(e) => setModalDob(e.target.value)} className="w-full mt-1 p-2 border border-gray-500 text-red-600 rounded" />
+                    {fieldErrors.dob && <div className="text-xs text-red-600 mt-1">{fieldErrors.dob}</div>}
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-gray-600">Phone</label>
+                    <input required value={modalPhone} onChange={(e) => setModalPhone(e.target.value)} placeholder="Mobile number" className="w-full mt-1 p-2 border border-gray-500 text-red-600 rounded" />
+                    {fieldErrors.phone && <div className="text-xs text-red-600 mt-1">{fieldErrors.phone}</div>}
+                  </div>
+
+                  <div className="md:col-span-2 flex items-start gap-3">
+                    <button type="button" onClick={() => handleAttachLocationToggle(!attachLocation)} className={`inline-flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium ${attachLocation ? 'bg-green-50 border border-green-200 text-green-700' : 'bg-white border border-gray-200 text-gray-700'}`}>
+                      <MapPin className="w-4 h-4" />
+                      <span>{attachLocation ? 'Location attached' : 'Attach my current location'}</span>
+                    </button>
+                    <div className="flex flex-col">
+                      {modalLocation ? (
+                        <div className="text-xs text-gray-600">Attached: {modalLocation.lat.toFixed(4)}, {modalLocation.lon.toFixed(4)} <a href={`https://www.google.com/maps?q=${modalLocation.lat},${modalLocation.lon}`} target="_blank" rel="noreferrer" className="ml-2 text-xs text-blue-600 underline">Open map</a></div>
+                      ) : (
+                        <div className="text-xs text-gray-500">Include your coordinates to help hospitals locate you faster.</div>
+                      )}
+                      {locationError && <div className="text-xs text-red-600 mt-1">{locationError}</div>}
+                      {fieldErrors.location && <div className="text-xs text-red-600 mt-1">{fieldErrors.location}</div>}
+                    </div>
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <label className="text-xs text-gray-600">Last donation date</label>
+                    <input required type="date" value={modalLastDonation} onChange={(e) => setModalLastDonation(e.target.value)} className="w-full mt-1 p-2 border border-gray-500 text-red-600 rounded" />
+                    {fieldErrors.lastDonation && <div className="text-xs text-red-600 mt-1">{fieldErrors.lastDonation}</div>}
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <label className="text-xs text-gray-600">Notes / health info</label>
+                    <textarea required value={modalNotes} onChange={(e) => setModalNotes(e.target.value)} rows={3} className="w-full mt-1 p-2 border border-gray-500 text-red-600 rounded" />
+                    <p className="text-xs text-gray-500 mt-1">Include any relevant health information (medications, recent travel, etc.).</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-end gap-3 mt-4">
+                  <button type="button" onClick={() => setShowBookingModal(false)} className="px-4 py-2 rounded bg-white border border-red-600 text-red-600">Cancel</button>
+                  <button type="submit" disabled={bookingLoading} className={`px-4 py-2 rounded bg-red-600 text-white font-semibold ${bookingLoading ? 'opacity-60' : 'hover:bg-red-700'}`}>
+                    {bookingLoading ? 'Booking...' : 'Confirm'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
         </main>
       </div>
     </div>

@@ -494,12 +494,77 @@ export default function HospitalLanding() {
     try {
       const fb = await initFirebase();
       if (fb && fb.db) {
-        const { doc, updateDoc, serverTimestamp } = await import('firebase/firestore');
-        await updateDoc(doc(fb.db, 'donor_offers', id), { status: 'fulfilled', fulfilledAt: serverTimestamp(), hospitalFulfilled: true });
-        setNotifications(n => [{ id: Date.now(), text: `Request ${id} fulfilled` }, ...n]);
+        const { doc, deleteDoc, collection, addDoc, serverTimestamp, getDoc } = await import('firebase/firestore');
+        // Delete the donor_offer so it disappears for both donor and hospital UIs
+        const offerRef = doc(fb.db, 'donor_offers', id);
+        // Optionally notify donor before deletion (attempt to read donorId)
+        try {
+          const snap = await getDoc(offerRef);
+          const offer = snap.exists() ? (snap.data() || {}) : null;
+          if (offer && offer.donorId) {
+            try {
+              const notifsRef = collection(fb.db, 'notifications');
+              await addDoc(notifsRef, {
+                recipientId: offer.donorId,
+                type: 'offer_fulfilled',
+                donorOfferId: id,
+                message: `Your request ${id} was marked fulfilled by ${hospitalName || 'a hospital'}.`,
+                createdAt: serverTimestamp(),
+                read: false,
+              });
+            } catch (e) {
+              console.error('failed to notify donor of fulfillment', e);
+            }
+          }
+        } catch (e) {
+          console.debug('Could not read offer before deletion:', e);
+        }
+
+        await deleteDoc(offerRef);
+
+        // Remove from local UI state and cached accepted requests (if present)
+        try {
+          setRequests(prev => prev.filter(x => x.id !== id));
+          const user = getCurrentUser('hospital');
+          const uid = user?.uid || user?.id || null;
+          const emailKey = (user?.email || '').replace(/[@.]/g, '_');
+          const hospitalId = localStorage.getItem('current_hospital_id') || uid || emailKey;
+          const cacheKey = 'hospital_accepted_requests_' + hospitalId;
+          const cached = localStorage.getItem(cacheKey);
+          if (cached) {
+            try {
+              const arr = JSON.parse(cached) || [];
+              const filtered = arr.filter(r => r.id !== id);
+              localStorage.setItem(cacheKey, JSON.stringify(filtered));
+              console.debug('💾 Removed fulfilled request from cache:', { cacheKey, id });
+            } catch (e) {
+              console.error('Failed to update accepted requests cache after deletion', e);
+            }
+          }
+        } catch (e) {
+          console.error('Failed to update local state/cache after deletion', e);
+        }
+
+        setNotifications(n => [{ id: Date.now(), text: `Request ${id} fulfilled and removed` }, ...n]);
       } else {
-        setRequests(r => r.map(x => x.id === id ? { ...x, status: 'fulfilled' } : x));
-        setNotifications(n => [{ id: Date.now(), text: `Request ${id} fulfilled (local)` }, ...n]);
+        // Local fallback: remove from lists and cache
+        setRequests(r => r.filter(x => x.id !== id));
+        try {
+          const user = getCurrentUser('hospital');
+          const uid = user?.uid || user?.id || null;
+          const emailKey = (user?.email || '').replace(/[@.]/g, '_');
+          const hospitalId = localStorage.getItem('current_hospital_id') || uid || emailKey;
+          const cacheKey = 'hospital_accepted_requests_' + hospitalId;
+          const cached = localStorage.getItem(cacheKey);
+          if (cached) {
+            const arr = JSON.parse(cached) || [];
+            const filtered = arr.filter(r => r.id !== id);
+            localStorage.setItem(cacheKey, JSON.stringify(filtered));
+          }
+        } catch (e) {
+          console.error('Failed to update cache in local fallback', e);
+        }
+        setNotifications(n => [{ id: Date.now(), text: `Request ${id} fulfilled (local) and removed` }, ...n]);
       }
     } catch (e) {
       console.error('markFulfilled failed', e);
@@ -822,6 +887,7 @@ export default function HospitalLanding() {
   useEffect(() => {
     let unsubRequested = null;
     let unsubAccepted = null;
+    let unsubHospAccepted = null;
     let mounted = true;
     (async () => {
       try {
@@ -873,13 +939,15 @@ export default function HospitalLanding() {
         // temporary holders so we can merge snapshots
         let latestRequested = [];
         let latestAccepted = [];
+        let latestHospAccepted = [];
 
         unsubRequested = onSnapshot(qRequested, (snap) => {
           latestRequested = snap.docs.map(d => ({ id: d.id, ...(d.data() || {}) }));
           console.debug('📥 Firestore pending requests loaded:', { count: latestRequested.length, ids: latestRequested.map(r => r.id) });
-          // merge accepted first, then requested, dedupe by id
+          // merge accepted first (both donor_offers and hospital_offers accepted), then requested, dedupe by id
           const mergedMap = new Map();
           (latestAccepted || []).forEach(i => mergedMap.set(i.id, i));
+          (latestHospAccepted || []).forEach(i => mergedMap.set(i.id, i));
           (latestRequested || []).forEach(i => { if (!mergedMap.has(i.id)) mergedMap.set(i.id, i); });
           const merged = Array.from(mergedMap.values());
           if (mounted) {
@@ -889,8 +957,9 @@ export default function HospitalLanding() {
             // CRITICAL: Use hospitalId as cache key for data isolation
             try {
               const cacheKey = 'hospital_accepted_requests_' + hospitalId;
-              localStorage.setItem(cacheKey, JSON.stringify(latestAccepted || []));
-              console.debug('💾 Cached accepted requests (data isolation):', { cacheKey, count: latestAccepted.length });
+              const toCache = [...(latestAccepted || []), ...(latestHospAccepted || [])];
+              localStorage.setItem(cacheKey, JSON.stringify(toCache));
+              console.debug('💾 Cached accepted requests (data isolation):', { cacheKey, count: toCache.length });
             } catch (e) {
               console.debug('Failed to cache accepted requests', e);
             }
@@ -898,6 +967,35 @@ export default function HospitalLanding() {
         }, (err) => {
           console.error('❌ donor_offers requested onSnapshot error', err);
         });
+
+        // also subscribe to `hospital_offers` accepted for this hospital so donor-accepted hospital requests appear here
+        try {
+          const qHospAccepted = query(collection(fb.db, 'hospital_offers'), where('status', '==', 'accepted'), where('hospitalId', '==', hospitalId), orderBy('acceptedAt', 'desc'));
+          unsubHospAccepted = onSnapshot(qHospAccepted, (snap) => {
+            latestHospAccepted = snap.docs.map(d => ({ id: d.id, ...(d.data() || {}) }));
+            console.debug('📨 Firestore hospital_offers accepted callback:', { hospitalId, count: latestHospAccepted.length });
+            // merge donor accepted + hospital accepted + requested
+            const mergedMap = new Map();
+            (latestAccepted || []).forEach(i => mergedMap.set(i.id, i));
+            (latestHospAccepted || []).forEach(i => mergedMap.set(i.id, i));
+            (latestRequested || []).forEach(i => { if (!mergedMap.has(i.id)) mergedMap.set(i.id, i); });
+            const merged = Array.from(mergedMap.values());
+            if (mounted) {
+              setRequests(merged);
+              try {
+                const cacheKey = 'hospital_accepted_requests_' + hospitalId;
+                const toCache = [...(latestAccepted || []), ...(latestHospAccepted || [])];
+                localStorage.setItem(cacheKey, JSON.stringify(toCache));
+              } catch (e) {
+                console.error('Failed to cache hospital accepted offers', e);
+              }
+            }
+          }, (err) => {
+            console.error('❌ hospital_offers accepted onSnapshot error:', err);
+          });
+        } catch (e) {
+          console.debug('Failed to subscribe to hospital_offers accepted', e);
+        }
 
         unsubAccepted = onSnapshot(qAccepted, (snap) => {
           console.debug('📨 Firestore accepted query callback triggered (DATA ISOLATED TO HOSPITAL):', { hospitalId });
@@ -977,7 +1075,7 @@ export default function HospitalLanding() {
         }
       }
     })();
-    return () => { mounted = false; if (unsubRequested) unsubRequested(); if (unsubAccepted) unsubAccepted(); };
+    return () => { mounted = false; if (unsubRequested) unsubRequested(); if (unsubAccepted) unsubAccepted(); if (unsubHospAccepted) unsubHospAccepted(); };
   }, [authStatus]);
 
   // Merge cached accepted requests with current requests to ensure they display after reload
@@ -1145,7 +1243,7 @@ export default function HospitalLanding() {
                 value={acceptedSearch}
                 onChange={(e) => setAcceptedSearch(e.target.value)}
                 placeholder="Search accepted requests..."
-                className="w-full px-3 py-2 border border-gray-200 text-red-500 rounded-lg"
+                className="w-full px-3 py-2 border border-red-600 text-red-500 rounded-lg"
               />
             </div>
             <div className="space-y-3">
@@ -1236,7 +1334,7 @@ export default function HospitalLanding() {
             </div>
           </section>
 
-          <aside className="bg-white/60 rounded-3xl p-4 shadow-lg flex flex-col gap-4">
+          <aside className="bg-white rounded-3xl p-4 shadow-lg flex flex-col gap-4">
             <div className="flex items-center gap-3">
               <div className="w-14 h-14 rounded-xl bg-red-600/10 flex items-center justify-center">
                 <Users className="w-6 h-6 text-red-600" />
@@ -1326,26 +1424,51 @@ export default function HospitalLanding() {
                       setNotifications(n => [{ id: Date.now(), text: `Open request: ${reqBloodType} x${reqQuantity} at ${reqLocation || 'unspecified'}` }, ...n]);
 
                       try {
-                        const fb = await initFirebase();
-                                        if (fb && fb.db) {
-                                          const user = getCurrentUser('hospital');
-                                          const uid = user?.uid || user?.id || null;
-                                          const emailKey = (user?.email || '').replace(/[@.]/g, '_');
-                                          const hospitalId = uid || emailKey;
-                                          const { collection, addDoc, serverTimestamp } = await import('firebase/firestore');
-                                          // write hospital-created request under requests/hospitals/items
-                                          const docRef = await addDoc(collection(fb.db, 'requests', 'hospitals', 'items'), {
-                                            donor: 'Open Call',
-                                            bloodType: reqBloodType,
-                                            quantity: reqQuantity,
-                                            status: 'pending',
-                                            location: reqLocation || 'Not specified',
-                                            message: reqMessage,
-                                            hospitalId,
-                                            createdAt: serverTimestamp(),
-                                          });
-                          // Optionally replace optimistic item id (UI will update from snapshot)
-                        } else {
+                          const fb = await initFirebase();
+                                          if (fb && fb.db) {
+                                            const user = getCurrentUser('hospital');
+                                            const uid = user?.uid || user?.id || null;
+                                            const emailKey = (user?.email || '').replace(/[@.]/g, '_');
+                                            const hospitalId = uid || emailKey;
+                                            const hospitalNm = hospitalName || null;
+                                            const { collection, addDoc, serverTimestamp, query, where, getDocs } = await import('firebase/firestore');
+                                            // write hospital-created request into `hospital_offers` so donors can see it
+                                            const docRef = await addDoc(collection(fb.db, 'hospital_offers'), {
+                                              hospitalId,
+                                              hospitalName: hospitalNm,
+                                              donor: 'Open Call',
+                                              bloodType: reqBloodType,
+                                              quantity: reqQuantity,
+                                              status: 'requested',
+                                              location: reqLocation || 'Not specified',
+                                              message: reqMessage,
+                                              createdAt: serverTimestamp(),
+                                            });
+                                            // notify donors (all users with role 'donor') so they see the open request
+                                            try {
+                                              const usersRef = collection(fb.db, 'users');
+                                              const qDon = query(usersRef, where('role', '==', 'donor'));
+                                              const snaps = await getDocs(qDon);
+                                              const notifsRef = collection(fb.db, 'notifications');
+                                              snaps.forEach(async (u) => {
+                                                try {
+                                                  await addDoc(notifsRef, {
+                                                    recipientId: u.id,
+                                                    type: 'hospital_request',
+                                                    hospitalOfferId: docRef.id,
+                                                    message: `Open blood request: ${reqBloodType} x${reqQuantity} at ${reqLocation || 'unspecified'}`,
+                                                    createdAt: serverTimestamp(),
+                                                    read: false,
+                                                  });
+                                                } catch (e) {
+                                                  console.error('failed to create notification for donor', u.id, e);
+                                                }
+                                              });
+                                            } catch (e) {
+                                              console.error('failed to notify donors', e);
+                                            }
+                            // Optionally replace optimistic item id (UI will update from snapshot)
+                          } else {
                           // persist to localStorage so donors (other pages) can see it
                           try {
                             const existing = JSON.parse(localStorage.getItem('public_requests') || '[]');

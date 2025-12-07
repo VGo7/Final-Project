@@ -14,6 +14,8 @@ import {
   MessageSquare,
   Globe,
   ShieldCheck,
+  Check,
+  X,
 } from "lucide-react";
 import { signOut, initFirebase } from '@/utils/auth';
 
@@ -115,6 +117,7 @@ export default function DonorLanding() {
   useEffect(() => {
     if (!process.env.NEXT_PUBLIC_FIREBASE_API_KEY) return;
     let unsubSnapshot = null;
+    let unsubHospitalOffers = null;
     let unsubAuth = null;
     let unsubBookings = null;
     let unsubNotifications = null;
@@ -142,10 +145,27 @@ export default function DonorLanding() {
             const qOffers = query(collection(fb.db, 'donor_offers'), where('donorId', '==', uid), orderBy('createdAt', 'desc'));
             if (unsubSnapshot) unsubSnapshot();
             unsubSnapshot = onSnapshot(qOffers, (snap) => {
-              const items = snap.docs.map(d => ({ id: d.id, ...(d.data() || {}) }));
-              if (mounted) setRequests(items);
+              const donorItems = snap.docs.map(d => ({ id: d.id, origin: 'donor', ...(d.data() || {}) }));
+              // merge with any hospital_offers we have from another snapshot
+              if (mounted) setRequests(prev => {
+                const prevHosp = (prev || []).filter(p => p.origin === 'hospital');
+                return [...donorItems, ...prevHosp];
+              });
             }, (err) => {
               console.error('donor_offers onSnapshot error', err);
+            });
+
+            // also subscribe to public hospital requests so donors can see them
+            const qHosp = query(collection(fb.db, 'hospital_offers'), where('status', '==', 'requested'), orderBy('createdAt', 'desc'));
+            if (typeof unsubHospitalOffers === 'function') unsubHospitalOffers();
+            unsubHospitalOffers = onSnapshot(qHosp, (snap) => {
+              const hospItems = snap.docs.map(d => ({ id: d.id, origin: 'hospital', ...(d.data() || {}) }));
+              if (mounted) setRequests(prev => {
+                const prevDonor = (prev || []).filter(p => p.origin === 'donor');
+                return [...prevDonor, ...hospItems];
+              });
+            }, (err) => {
+              console.error('hospital_offers onSnapshot error', err);
             });
 
             // bookings for this donor
@@ -183,6 +203,7 @@ export default function DonorLanding() {
       try { if (typeof unsubSnapshot === 'function') unsubSnapshot(); } catch (e) {}
       try { if (typeof unsubBookings === 'function') unsubBookings(); } catch (e) {}
       try { if (typeof unsubNotifications === 'function') unsubNotifications(); } catch (e) {}
+      try { if (typeof unsubHospitalOffers === 'function') unsubHospitalOffers(); } catch (e) {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -220,6 +241,155 @@ export default function DonorLanding() {
     }
   }
 
+    // Accept a hospital request (hospital_offers) and create an h_bookings entry
+    async function acceptHospitalOffer(id) {
+      if (!id) return;
+      setBookingError('');
+      setBookingSuccess('');
+      setBookingLoading(true);
+      try {
+        if (!process.env.NEXT_PUBLIC_FIREBASE_API_KEY) {
+          setBookingError('Firebase not configured');
+          setBookingLoading(false);
+          return;
+        }
+        const fb = await initFirebase();
+        if (!fb || !fb.db || !fb.auth) {
+          setBookingError('Firebase unavailable');
+          setBookingLoading(false);
+          return;
+        }
+        const user = fb.auth.currentUser;
+        const uid = user?.uid || null;
+        const { doc, runTransaction, serverTimestamp, collection, addDoc } = await import('firebase/firestore');
+        const offerRef = doc(fb.db, 'hospital_offers', id);
+
+        const result = await runTransaction(fb.db, async (tx) => {
+          const snap = await tx.get(offerRef);
+          if (!snap.exists()) throw new Error('offer-not-found');
+          const offer = snap.data() || {};
+          const status = (offer.status || '').toString().toLowerCase();
+          if (status && status !== 'requested' && status !== 'pending') throw new Error('already-processed');
+
+          const bookingsRef = collection(fb.db, 'h_bookings');
+          const newBookingRef = doc(bookingsRef);
+          const booking = {
+            donorId: uid,
+            donorName: fullName || null,
+            hospitalId: offer.hospitalId || null,
+            hospitalName: offer.hospitalName || null,
+            hospitalOfferId: id,
+            date: offer.requestedDate || null,
+            slot: offer.requestedSlot || null,
+            quantity: Number(offer.quantity) || 1,
+            bloodType: offer.bloodType || null,
+            status: 'booked',
+            createdAt: serverTimestamp(),
+          };
+
+          tx.set(newBookingRef, booking);
+          tx.update(offerRef, {
+            status: 'accepted',
+            acceptedAt: serverTimestamp(),
+            donorId: uid,
+            donorName: fullName || null,
+            bookingId: newBookingRef.id,
+          });
+
+          return { bookingId: newBookingRef.id, booking };
+        });
+
+        try {
+          const notifsRef = collection(fb.db, 'notifications');
+          await addDoc(notifsRef, {
+            recipientId: (result && result.booking && result.booking.hospitalId) || null,
+            type: 'hospital_request_accepted',
+            hospitalOfferId: id,
+            bookingId: result.bookingId,
+            message: `${fullName || 'A donor'} accepted your request`,
+            createdAt: serverTimestamp(),
+            read: false,
+          });
+        } catch (e) {
+          console.error('Failed to notify hospital', e);
+        }
+
+        // update local list
+        setRequests(prev => (prev || []).map(r => r.id === id ? { ...(r || {}), status: 'accepted', donorId: uid, donorName: fullName, bookingId: result.bookingId } : r));
+        setBookingSuccess('You accepted the request — appointment created');
+      } catch (err) {
+        console.error('acceptHospitalOffer error', err);
+        setBookingError(err?.message || 'Failed to accept request');
+      } finally {
+        setBookingLoading(false);
+      }
+    }
+
+    // Deny a hospital request (hospital_offers) — mark as denied and notify hospital
+    async function denyHospitalOffer(id) {
+      if (!id) return;
+      setBookingError('');
+      setBookingSuccess('');
+      setBookingLoading(true);
+      try {
+        if (!process.env.NEXT_PUBLIC_FIREBASE_API_KEY) {
+          setBookingError('Firebase not configured');
+          setBookingLoading(false);
+          return;
+        }
+        const fb = await initFirebase();
+        if (!fb || !fb.db || !fb.auth) {
+          setBookingError('Firebase unavailable');
+          setBookingLoading(false);
+          return;
+        }
+        const user = fb.auth.currentUser;
+        const uid = user?.uid || null;
+        const { doc, updateDoc, serverTimestamp, getDoc, collection, addDoc } = await import('firebase/firestore');
+        const offerRef = doc(fb.db, 'hospital_offers', id);
+
+        // read existing offer to get hospitalId for notification
+        let offer = null;
+        try {
+          const snap = await getDoc(offerRef);
+          offer = snap.exists() ? (snap.data() || {}) : null;
+        } catch (e) {
+          console.debug('Could not read hospital offer before denying', e);
+        }
+
+        await updateDoc(offerRef, {
+          status: 'denied',
+          deniedAt: serverTimestamp(),
+          donorId: uid,
+          donorName: fullName || null,
+        });
+
+        // notify hospital user (if hospitalId present)
+        try {
+          const notifsRef = collection(fb.db, 'notifications');
+          await addDoc(notifsRef, {
+            recipientId: (offer && offer.hospitalId) || null,
+            type: 'hospital_request_denied',
+            hospitalOfferId: id,
+            message: `${fullName || 'A donor'} denied your request`,
+            createdAt: serverTimestamp(),
+            read: false,
+          });
+        } catch (e) {
+          console.error('Failed to notify hospital after denial', e);
+        }
+
+        // update local list
+        setRequests(prev => (prev || []).map(r => r.id === id ? { ...(r || {}), status: 'denied', donorId: uid, donorName: fullName } : r));
+        setBookingSuccess('You denied the request');
+      } catch (err) {
+        console.error('denyHospitalOffer error', err);
+        setBookingError(err?.message || 'Failed to deny request');
+      } finally {
+        setBookingLoading(false);
+      }
+    }
+
   // Requests loaded from Firestore for this donor (replaces local `recent` list)
   const [requests, setRequests] = useState([]);
 
@@ -232,6 +402,26 @@ export default function DonorLanding() {
       if (!isNaN(d.getTime())) return d;
     } catch (e) {}
     return null;
+  }
+
+  // Return a friendly date/time string for a request (falls back to raw fields)
+  function formatScheduledDateTime(r) {
+    if (!r) return 'Unscheduled';
+    try {
+      const raw = r.requestedDate || r.date || null;
+      if (raw) {
+        if (typeof raw.toDate === 'function') return raw.toDate().toLocaleString();
+        const d = new Date(raw);
+        if (!isNaN(d.getTime())) return d.toLocaleString();
+        return String(raw);
+      }
+      const parts = [];
+      if (r.requestedSlot) parts.push(String(r.requestedSlot));
+      if (r.slot) parts.push(String(r.slot));
+      return parts.length ? parts.join(' • ') : 'Unscheduled';
+    } catch (e) {
+      return 'Unscheduled';
+    }
   }
 
   // Safely format location-like fields so we don't render raw objects into JSX
@@ -607,12 +797,16 @@ export default function DonorLanding() {
               <h5 className="font-semibold mb-2 text-red-600">Incoming appointments</h5>
               <p className="text-xs text-gray-500 mb-3">Your accepted appointments by hospitals.</p>
               {(() => {
-                // Merge accepted bookings with any donor_offers that are marked accepted but not yet present in bookings
+                // Merge accepted items and prioritize hospital-origin accepted requests
                 const acceptedBookings = bookings.filter(b => (b.status || '').toString().toLowerCase() === 'accepted');
                 const acceptedFromRequests = requests.filter(r => (r.status || '').toString().toLowerCase() === 'accepted');
+                const hospitalAccepted = acceptedFromRequests.filter(r => (r.origin || '').toString().toLowerCase() === 'hospital');
+                const otherAcceptedRequests = acceptedFromRequests.filter(r => (r.origin || '').toString().toLowerCase() !== 'hospital');
+                // Order: hospital-origin accepted requests first, then bookings, then other accepted requests.
                 const mergedAccepted = [
-                  ...acceptedBookings,
-                  ...acceptedFromRequests.filter(r => !acceptedBookings.some(b => b.donorOfferId === r.id))
+                  ...hospitalAccepted,
+                  ...acceptedBookings.filter(b => !hospitalAccepted.some(h => h.id === b.donorOfferId)),
+                  ...otherAcceptedRequests.filter(r => !acceptedBookings.some(b => b.donorOfferId === r.id) && !hospitalAccepted.some(h => h.id === r.id)),
                 ];
 
                 if (mergedAccepted.length === 0) {
@@ -684,14 +878,53 @@ export default function DonorLanding() {
                       <div className="text-sm text-gray-500">No requests found.</div>
                     )}
                     {requests.filter(r => (r.status || '').toString().toLowerCase() !== 'accepted').map((r) => (
-                      <div key={r.id} className="flex items-center justify-between p-3 bg-white border border-gray-100 rounded-lg shadow-sm">
-                      <div>
-                        <div className="font-medium text-gray-900">{r.title || r.donor || `Request ${r.id}`}</div>
-                        <div className="text-sm text-gray-500">{(formatLocationField(r.location) || r.hospital || r.message) || (r.bloodType ? `Blood: ${r.bloodType} • Qty: ${r.quantity || 1}` : '')}</div>
-                      </div>
-                      <div className="text-sm text-red-600">{r.status ? r.status : (r.createdAt ? new Date(r.createdAt).toLocaleString() : '')}</div>
-                    </div>
-                  ))}
+                      r.origin === 'hospital' ? (
+                        <div key={r.id} className="p-3 bg-red-50 rounded-lg border border-red-50 text-red-600">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <div className="font-medium">{r.hospitalName || r.title || `Request ${r.id}`}</div>
+
+                              <div className="mt-2 text-xs text-gray-500">
+                                <div className="flex items-center gap-2">
+                                    {(() => {
+                                      const sched = formatScheduledDateTime(r);
+                                      if (!sched || sched === 'Unscheduled') {
+                                        return (
+                                          <span className="inline-flex items-center gap-2 px-2 py-1 rounded bg-red-600 text-white text-xs font-medium">Urgent</span>
+                                        );
+                                      }
+                                      return (
+                                        <>
+                                          <Calendar className="w-4 h-4 text-gray-400" />
+                                          <span>{sched}</span>
+                                        </>
+                                      );
+                                    })()}
+                                  </div>
+
+                                  <div className="mt-1 text-xs text-gray-500">
+                                    <strong>Blood:</strong> {r.bloodType || 'Any'} {r.quantity || r.qty ? `• Qty: ${r.quantity || r.qty || 1}` : ''}
+                                  </div>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button onClick={() => acceptHospitalOffer(r.id)} disabled={bookingLoading} className="px-3 py-2 rounded bg-green-600 text-white flex items-center gap-2"><Check className="w-4 h-4" />Accept</button>
+                              <button onClick={() => denyHospitalOffer(r.id)} disabled={bookingLoading} className="px-3 py-2 rounded bg-white border border-gray-200 text-gray-700 flex items-center gap-2"><X className="w-4 h-4" />Deny</button>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div key={r.id} className="flex items-center justify-between p-3 bg-white border border-gray-100 rounded-lg shadow-sm">
+                          <div>
+                            <div className="font-medium text-gray-900">{r.title || r.donor || r.hospitalName || `Request ${r.id}`}</div>
+                            <div className="text-sm text-gray-500">{(formatLocationField(r.location) || r.hospital || r.message) || (r.bloodType ? `Blood: ${r.bloodType} • Qty: ${r.quantity || 1}` : '')}</div>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <div className="text-sm text-red-600">{r.status ? r.status : (r.createdAt ? new Date(r.createdAt).toLocaleString() : '')}</div>
+                          </div>
+                        </div>
+                      )
+                    ))}
                 </div>
             </div>
           </section>

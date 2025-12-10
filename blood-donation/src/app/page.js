@@ -243,7 +243,7 @@ export default function BloodDonationHome() {
             <div>
               <div className="flex items-center space-x-2 mb-4">
                 <Heart className="w-6 h-6 text-red-600 fill-current" />
-                <span className="text-xl font-bold">LifeBlood</span>
+                <span className="text-xl font-bold">The Donor</span>
               </div>
               <p className="text-gray-400">Connecting donors with those in need, one drop at a time.</p>
             </div>
@@ -275,7 +275,7 @@ export default function BloodDonationHome() {
             </div>
           </div>
           <div className="border-t border-gray-800 pt-3 text-center text-gray-400">
-            <p>&copy; 2024 LifeBlood Community Blood Donation System. All rights reserved.</p>
+            <p>&copy; 2025 The Donor Community Blood Donation System. All rights reserved.</p>
           </div>
         </div>
       </footer>
